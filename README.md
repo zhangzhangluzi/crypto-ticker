@@ -28,6 +28,7 @@
    - Go to **System Preferences** → **Security & Privacy**.
    - Under the **Security** section, find the warning about **CryptoTicker**.
    - Click **"Open Anyway"** to trust the app.
+4. If the release asset is still processing, use the development steps below to build from source.
 
 ## Development
 
