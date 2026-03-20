@@ -33,7 +33,7 @@ jobs:
           echo "ref=refs/tags/$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Check out tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.release.outputs.ref }}
 
@@ -43,7 +43,8 @@ jobs:
             -project CryptoTicker.xcodeproj \
             -target CryptoTicker \
             -configuration Release \
-            -derivedDataPath build \
+            -destination "platform=macOS" \
+            CONFIGURATION_BUILD_DIR="$PWD/build/Release" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build
@@ -51,7 +52,7 @@ jobs:
       - name: Package app
         shell: bash
         run: |
-          APP_PATH="build/Build/Products/Release/CryptoTicker.app"
+          APP_PATH="build/Release/CryptoTicker.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "Expected app not found at $APP_PATH" >&2
             exit 1
