@@ -13,8 +13,8 @@
 
 ## Requirements
 
-- macOS 13.0 or later
-- Xcode 16 or later (for local builds)
+- macOS 26.0 or later
+- A recent Xcode version with the macOS SDK (for local builds)
 
 ## Installation
 
@@ -22,7 +22,7 @@
 > **Why not in the App Store?**  
 > Because publishing apps cost money, and I’d rather **HODL** my crypto.
 
-1. Download and unzip **`CryptoTicker.zip`** from the [latest release](https://github.com/AttackOnMorty/crypto-ticker/releases).
+1. Download and unzip **`CryptoTicker.zip`** from the [latest release](https://github.com/zhangzhangluzi/crypto-ticker/releases).
 2. Move **CryptoTicker** to your **Applications** folder.
 3. Open the app. macOS will likely complain that this app is "unverified."
    - Go to **System Preferences** → **Security & Privacy**.
