@@ -9,8 +9,8 @@ import Foundation
 
 struct AppConfiguration {
     static let appName = "CryptoTicker"
-    static let version = "1.0.0"
-    static let bundleIdentifier = "com.cryptoticker.app"
+    static let version = "1.1.0"
+    static let bundleIdentifier = "io.github.zhangzhangluzi.cryptoticker"
 
     struct API {
         static let binanceBaseURL = "https://api.binance.com/api/v3"
@@ -34,7 +34,7 @@ struct AppConfiguration {
     }
 
     struct Logging {
-        static let subsystem = "com.cryptoticker.app"
+        static let subsystem = AppConfiguration.bundleIdentifier
     }
 
     struct Defaults {
@@ -49,4 +49,9 @@ struct AppConfiguration {
         }
         return true
     }
-} 
+}
+
+extension Notification.Name {
+    static let priceUpdated = Notification.Name("PriceUpdated")
+    static let connectionStateChanged = Notification.Name("ConnectionStateChanged")
+}

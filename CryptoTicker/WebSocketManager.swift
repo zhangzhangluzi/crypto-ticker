@@ -5,6 +5,7 @@ enum WebSocketError: Error {
     case invalidURL
     case connectionFailed
     case dataParsingFailed
+    case invalidResponse(Int)
     case networkError(Error)
 }
 
@@ -32,6 +33,13 @@ struct CryptoCurrency {
     ]
 }
 
+private struct PriceSnapshot {
+    let symbol: String
+    let price: String
+    let change: String
+}
+
+@MainActor
 class WebSocketManager: ObservableObject {
     @Published var prices: [String: String] = [:]
     @Published var selectedSymbols: [String] = []
@@ -39,6 +47,7 @@ class WebSocketManager: ObservableObject {
     @Published var connectionStates: [String: ConnectionState] = [:]
     
     private var webSocketTasks: [String: URLSessionWebSocketTask] = [:]
+    private var reconnectTasks: [String: Task<Void, Never>] = [:]
     private let urlSession = URLSession(configuration: .default)
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "WebSocketManager")
     
@@ -46,14 +55,16 @@ class WebSocketManager: ObservableObject {
     
     init() {
         loadSelectedCryptos()
-        Task {
-            await fetchAllCryptoPrices()
-            connectWebSockets()
-        }
+        connectWebSockets()
+        Task { await fetchAllCryptoPrices() }
     }
 
     private func loadSelectedCryptos() {
-        selectedSymbols = UserDefaults.standard.array(forKey: AppConfiguration.UserDefaultsKeys.selectedCryptos) as? [String] ?? AppConfiguration.Defaults.selectedCryptos
+        let persistedSymbols = UserDefaults.standard.array(forKey: AppConfiguration.UserDefaultsKeys.selectedCryptos) as? [String] ?? AppConfiguration.Defaults.selectedCryptos
+        let validSymbols = persistedSymbols.filter { symbol in
+            availableCurrencies.contains { $0.symbol == symbol }
+        }
+        selectedSymbols = validSymbols.isEmpty ? AppConfiguration.Defaults.selectedCryptos : validSymbols
     }
     
     private func saveSelectedCryptos() {
@@ -62,44 +73,58 @@ class WebSocketManager: ObservableObject {
 
     func fetchAllCryptoPrices() async {
         logger.info("Fetching prices for all \(self.availableCurrencies.count) cryptocurrencies")
-        
-        await withTaskGroup(of: Void.self) { group in
-            for currency in self.availableCurrencies {
+
+        var snapshots: [PriceSnapshot] = []
+
+        await withTaskGroup(of: Result<PriceSnapshot, Error>.self) { group in
+            for currency in availableCurrencies {
                 group.addTask {
-                    await self.fetchPrice(for: currency.symbol)
+                    do {
+                        return .success(try await Self.fetchPriceSnapshot(for: currency.symbol))
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+
+            for await result in group {
+                switch result {
+                case .success(let snapshot):
+                    snapshots.append(snapshot)
+                case .failure(let error):
+                    logger.error("Failed to fetch a cryptocurrency price: \(error.localizedDescription, privacy: .public)")
                 }
             }
         }
 
-        
+        for snapshot in snapshots {
+            prices[snapshot.symbol] = formatPrice(snapshot.price)
+            priceChanges[snapshot.symbol] = formatPercent(snapshot.change) + "%"
+        }
+
+        NotificationCenter.default.post(name: .priceUpdated, object: nil)
         logger.info("Completed fetching all cryptocurrency prices")
     }
-    
-    private func fetchPrice(for symbol: String) async {
+
+    nonisolated private static func fetchPriceSnapshot(for symbol: String) async throws -> PriceSnapshot {
         guard let url = URL(string: "\(AppConfiguration.API.binanceBaseURL)/ticker/24hr?symbol=\(symbol.uppercased())") else {
-            logger.error("Invalid URL for symbol: \(symbol)")
-            return
+            throw WebSocketError.invalidURL
         }
-        
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let priceStr = json["lastPrice"] as? String,
-                  let changeStr = json["priceChangePercent"] as? String else {
-                logger.error("Failed to parse price data for \(symbol)")
-                return
-            }
-            
-            await MainActor.run {
-                self.prices[symbol] = self.formatPrice(priceStr)
-                self.priceChanges[symbol] = self.formatPercent(changeStr) + "%"
-                NotificationCenter.default.post(name: NSNotification.Name("PriceUpdated"), object: nil)
-            }
-            
-        } catch {
-            logger.error("Failed to fetch price for \(symbol): \(error.localizedDescription)")
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200...299).contains(httpResponse.statusCode) {
+            throw WebSocketError.invalidResponse(httpResponse.statusCode)
         }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let priceStr = json["lastPrice"] as? String,
+              let changeStr = json["priceChangePercent"] as? String else {
+            throw WebSocketError.dataParsingFailed
+        }
+
+        return PriceSnapshot(symbol: symbol, price: priceStr, change: changeStr)
     }
 
     func connectWebSockets() {
@@ -116,6 +141,12 @@ class WebSocketManager: ObservableObject {
     }
     
     private func connectWebSocket(for symbol: String) {
+        cancelReconnect(for: symbol)
+
+        if let existingTask = webSocketTasks.removeValue(forKey: symbol) {
+            existingTask.cancel(with: .goingAway, reason: nil)
+        }
+
         guard let url = URL(string: "\(AppConfiguration.API.binanceWebSocketURL)/\(symbol)@trade") else {
             logger.error("Invalid WebSocket URL for symbol: \(symbol)")
             updateConnectionState(for: symbol, state: .error(.invalidURL))
@@ -135,31 +166,28 @@ class WebSocketManager: ObservableObject {
         guard let task = webSocketTasks[symbol] else { return }
         
         task.receive { [weak self] result in
-            guard let self = self else { return }
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                guard self.selectedSymbols.contains(symbol) else { return }
 
-            guard self.selectedSymbols.contains(symbol) else { return }
-            
-            switch result {
-            case .success(let message):
-                if case .connecting = self.connectionStates[symbol] {
-                    self.updateConnectionState(for: symbol, state: .connected)
-                }
-                
-                if case .string(let text) = message {
-                    self.handleIncomingData(text, for: symbol)
-                }
-                self.receiveMessage(for: symbol) // Continue listening
-                
-            case .failure(let error):
-                self.logger.error("WebSocket error for \(symbol): \(error.localizedDescription)")
-                self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
-
-                if self.selectedSymbols.contains(symbol) {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + AppConfiguration.WebSocket.reconnectDelay) {
-                        if self.selectedSymbols.contains(symbol) {
-                            self.connectWebSocket(for: symbol)
-                        }
+                switch result {
+                case .success(let message):
+                    if case .connecting = self.connectionStates[symbol] {
+                        self.updateConnectionState(for: symbol, state: .connected)
                     }
+
+                    if case .string(let text) = message {
+                        self.handleIncomingData(text, for: symbol)
+                    } else {
+                        self.logger.error("Unsupported WebSocket message received for \(symbol)")
+                    }
+                    self.receiveMessage(for: symbol)
+
+                case .failure(let error):
+                    self.logger.error("WebSocket error for \(symbol): \(error.localizedDescription, privacy: .public)")
+                    self.webSocketTasks.removeValue(forKey: symbol)
+                    self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
+                    self.scheduleReconnect(for: symbol)
                 }
             }
         }
@@ -174,36 +202,33 @@ class WebSocketManager: ObservableObject {
             logger.error("Failed to parse WebSocket data for \(symbol)")
             return
         }
-        
-        DispatchQueue.main.async {
-            guard self.selectedSymbols.contains(symbol) else { return }
 
-            self.prices[symbol] = self.formatPrice(priceStr)
-            NotificationCenter.default.post(name: NSNotification.Name("PriceUpdated"), object: nil)
-        }
+        prices[symbol] = formatPrice(priceStr)
+        NotificationCenter.default.post(name: .priceUpdated, object: nil)
     }
     
     private func updateConnectionState(for symbol: String, state: ConnectionState) {
-        DispatchQueue.main.async {
-            self.connectionStates[symbol] = state
-            NotificationCenter.default.post(
-                name: NSNotification.Name("ConnectionStateChanged"),
-                object: nil,
-                userInfo: ["symbol": symbol, "state": state]
-            )
-        }
+        connectionStates[symbol] = state
+        NotificationCenter.default.post(
+            name: .connectionStateChanged,
+            object: nil,
+            userInfo: ["symbol": symbol, "state": state]
+        )
     }
     
     func disconnectWebSockets() {
         logger.info("Disconnecting all WebSockets")
-        webSocketTasks.keys.forEach { disconnectWebSocket(for: $0) }
+        let symbols = Array(Set(webSocketTasks.keys).union(reconnectTasks.keys))
+        symbols.forEach { disconnectWebSocket(for: $0) }
     }
     
     private func disconnectWebSocket(for symbol: String) {
-        guard let task = webSocketTasks[symbol] else { return }
+        cancelReconnect(for: symbol)
 
-        task.cancel(with: .goingAway, reason: nil)
-        webSocketTasks.removeValue(forKey: symbol)
+        if let task = webSocketTasks.removeValue(forKey: symbol) {
+            task.cancel(with: .goingAway, reason: nil)
+        }
+
         updateConnectionState(for: symbol, state: .disconnected)
     }
 
@@ -256,9 +281,31 @@ class WebSocketManager: ObservableObject {
         if case .connected = connectionStates[symbol] { return true }
         return false
     }
-    
 
-    deinit {
-        disconnectWebSockets()
+    private func scheduleReconnect(for symbol: String) {
+        cancelReconnect(for: symbol)
+
+        guard selectedSymbols.contains(symbol) else { return }
+
+        reconnectTasks[symbol] = Task { [weak self] in
+            let delay = UInt64(AppConfiguration.WebSocket.reconnectDelay * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: delay)
+
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard let self = self else { return }
+
+                self.reconnectTasks.removeValue(forKey: symbol)
+
+                guard self.selectedSymbols.contains(symbol) else { return }
+                self.connectWebSocket(for: symbol)
+            }
+        }
+    }
+
+    private func cancelReconnect(for symbol: String) {
+        reconnectTasks[symbol]?.cancel()
+        reconnectTasks.removeValue(forKey: symbol)
     }
 }

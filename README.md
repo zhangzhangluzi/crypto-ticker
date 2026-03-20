@@ -2,13 +2,19 @@
 
 <img width="424" height="251" alt="image" src="https://github.com/user-attachments/assets/cf46218a-7a20-4459-b82f-4fa84bdf0239" />
 
-**CryptoTicker** is a lightweight macOS menu bar application that displays real-time crypto prices using the Binance WebSocket API.
+**CryptoTicker** is a lightweight macOS menu bar application that displays real-time Binance **USDT** spot prices from your menu bar.
 
 ## Features
 
 - Real-time Crypto Prices
 - Multi-Crypto Support
 - 24h Price Percentage Change
+- Automatic WebSocket Reconnects
+
+## Requirements
+
+- macOS 13.0 or later
+- Xcode 16 or later (for local builds)
 
 ## Installation
 
@@ -22,3 +28,9 @@
    - Go to **System Preferences** → **Security & Privacy**.
    - Under the **Security** section, find the warning about **CryptoTicker**.
    - Click **"Open Anyway"** to trust the app.
+
+## Development
+
+1. Clone the repository.
+2. Open `CryptoTicker.xcodeproj` in Xcode.
+3. Build and run the `CryptoTicker` scheme.

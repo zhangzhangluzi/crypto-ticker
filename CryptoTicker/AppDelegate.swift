@@ -9,8 +9,10 @@ import Cocoa
 import SwiftUI
 import os.log
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarItem: NSStatusItem!
+    private var statusBarTimer: Timer?
     private let webSocketManager = WebSocketManager()
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppDelegate")
 
@@ -25,6 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationWillTerminate(_ notification: Notification) {
         logger.info("Application terminating...")
+        statusBarTimer?.invalidate()
         webSocketManager.disconnectWebSockets()
     }
 
@@ -53,14 +56,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(updateMenu),
-            name: NSNotification.Name("PriceUpdated"),
+            name: .priceUpdated,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(updateMenu),
-            name: NSNotification.Name("ConnectionStateChanged"),
+            name: .connectionStateChanged,
             object: nil
         )
     }
@@ -122,7 +125,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func formatCurrencyTitle(code: String, name: String, price: String, change: String, icon: String, isConnected: Bool) -> String {
         let status = isConnected ? "●" : "○"
-        return "\(status) \(icon) \(code) - \(name) - $\(price) (\(change))"
+        return "\(status) \(icon) \(code) - \(name) - \(price) USDT (\(change))"
     }
     
     private func createAttributedTitle(code: String, name: String, price: String, change: String, icon: String, isConnected: Bool) -> NSAttributedString {
@@ -149,7 +152,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }()
         
         let status = isConnected ? "●" : "○"
-        let fullText = "\(status)\t\(icon) \(code)\t\(name)\t$\(price)\t\(formatPriceChange(change))"
+        let fullText = "\(status)\t\(icon) \(code)\t\(name)\t\(price) USDT\t\(formatPriceChange(change))"
         
         let attributedString = NSMutableAttributedString(string: fullText, attributes: baseAttributes)
 
@@ -171,24 +174,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startPriceUpdates() {
-        Timer.scheduledTimer(withTimeInterval: AppConfiguration.UI.statusBarUpdateInterval, repeats: true) { [weak self] _ in
-            self?.updateStatusBarTitle()
+        statusBarTimer?.invalidate()
+        statusBarTimer = Timer.scheduledTimer(withTimeInterval: AppConfiguration.UI.statusBarUpdateInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.updateStatusBarTitle()
+            }
         }
     }
     
     private func updateStatusBarTitle() {
-        DispatchQueue.main.async {
-            guard let button = self.statusBarItem.button else { return }
-            
-            let displayText = self.createStatusBarDisplayText()
-            button.title = displayText
-        }
+        guard let button = statusBarItem.button else { return }
+        
+        let displayText = createStatusBarDisplayText()
+        button.title = displayText
     }
     
     private func createStatusBarDisplayText() -> String {
         let selectedPrices = webSocketManager.selectedSymbols.compactMap { symbol -> String? in
-            guard let currency = webSocketManager.getCurrency(for: symbol),
-                  let price = webSocketManager.prices[symbol] else {
+            guard let currency = webSocketManager.getCurrency(for: symbol) else {
                 return nil
             }
 
@@ -202,10 +205,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 connectionIndicator = "⚠️"
             }
 
-            return "\(currency.icon) \(price) \(connectionIndicator)"
+            let price = webSocketManager.prices[symbol] ?? "--"
+            return "\(currency.icon) \(price) \(connectionIndicator)".trimmingCharacters(in: .whitespaces)
         }
 
-        return selectedPrices.isEmpty ? "CRYPTO TICKER" : selectedPrices.joined(separator: "| ")
+        return selectedPrices.isEmpty ? "CRYPTO TICKER" : selectedPrices.joined(separator: " | ")
     }
 
     @objc private func statusBarButtonClicked() {}
@@ -220,9 +224,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc private func updateMenu() {
-        DispatchQueue.main.async {
-            self.statusBarItem.menu = self.createMenu()
-        }
+        statusBarItem.menu = createMenu()
     }
     
     @objc private func quitApp() {
