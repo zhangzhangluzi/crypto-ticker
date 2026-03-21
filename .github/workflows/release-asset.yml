@@ -73,6 +73,7 @@ jobs:
 
           pkgbuild \
             --component "$APP_PATH" \
+            --scripts "$PWD/.github/packaging/pkg-scripts" \
             --install-location "/Applications" \
             "$PKG_PATH"
 

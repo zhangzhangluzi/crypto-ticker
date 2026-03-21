@@ -49,6 +49,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenu()
         setupObservers()
         refreshDisplay(forceMenuRefresh: true, forceStatusBarRefresh: true)
+        presentMenuBarTipIfNeeded()
         logger.info("Application launched successfully")
     }
     
@@ -222,6 +223,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return selectedPrices.isEmpty ? "CRYPTO TICKER" : selectedPrices.joined(separator: " | ")
+    }
+
+    private func presentMenuBarTipIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: AppConfiguration.UserDefaultsKeys.hasShownMenuBarTip) else {
+            return
+        }
+
+        defaults.set(true, forKey: AppConfiguration.UserDefaultsKeys.hasShownMenuBarTip)
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "\(AppConfiguration.appName) is running in the menu bar"
+        alert.informativeText = "Look at the top-right of your screen for \"CRYPTO TICKER\" or the live price text, then click it to open the menu.\n\nYou can also relaunch it later from Applications or Spotlight."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func toggleCrypto(_ sender: NSMenuItem) {
