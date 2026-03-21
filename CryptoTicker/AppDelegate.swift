@@ -16,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currencyMenuItems: [String: NSMenuItem] = [:]
     private var pendingMenuRefreshSymbols: Set<String> = []
     private var isMenuOpen = false
+    private let appLaunchResolver = AppLaunchResolver()
     private lazy var webSocketManager = WebSocketManager()
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppDelegate")
 
@@ -38,6 +39,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("Application launching...")
+
+        guard appLaunchResolver.prepareForLaunch() else {
+            logger.info("Launch redirected to installed app copy")
+            return
+        }
+
         setupStatusBarItem()
         setupMenu()
         setupObservers()
