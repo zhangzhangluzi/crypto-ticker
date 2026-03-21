@@ -12,7 +12,8 @@ import os.log
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarItem: NSStatusItem!
-    private var statusBarTimer: Timer?
+    private let statusBarMenu = NSMenu()
+    private var currencyMenuItems: [String: NSMenuItem] = [:]
     private let webSocketManager = WebSocketManager()
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppDelegate")
 
@@ -21,13 +22,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusBarItem()
         setupMenu()
         setupObservers()
-        startPriceUpdates()
+        refreshDisplay()
         logger.info("Application launched successfully")
     }
     
     func applicationWillTerminate(_ notification: Notification) {
         logger.info("Application terminating...")
-        statusBarTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
         webSocketManager.disconnectWebSockets()
     }
 
@@ -41,78 +42,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         button.title = "Loading..."
         button.font = NSFont(name: AppConfiguration.UI.statusBarFont, size: AppConfiguration.UI.statusBarFontSize)
-
-        button.action = #selector(statusBarButtonClicked)
-        button.target = self
         
         logger.info("Status bar item created")
     }
     
     private func setupMenu() {
-        statusBarItem.menu = createMenu()
+        statusBarMenu.delegate = self
+        statusBarMenu.removeAllItems()
+        currencyMenuItems.removeAll()
+
+        statusBarMenu.addItem(.separator())
+
+        for currency in webSocketManager.availableCurrencies {
+            let item = createCurrencyMenuItem(for: currency)
+            currencyMenuItems[currency.symbol] = item
+            statusBarMenu.addItem(item)
+        }
+        
+        statusBarMenu.addItem(.separator())
+        statusBarMenu.addItem(createQuitMenuItem())
+        statusBarItem.menu = statusBarMenu
     }
     
     private func setupObservers() {
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(updateMenu),
+            selector: #selector(refreshDisplay),
             name: .priceUpdated,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(updateMenu),
+            selector: #selector(refreshDisplay),
             name: .connectionStateChanged,
             object: nil
         )
-    }
-    
-    private func createMenu() -> NSMenu {
-        let menu = NSMenu()
-        menu.delegate = self
 
-        menu.addItem(.separator())
-
-        for currency in webSocketManager.availableCurrencies {
-            let item = createCurrencyMenuItem(for: currency)
-            menu.addItem(item)
-        }
-        
-        menu.addItem(.separator())
-        menu.addItem(createQuitMenuItem())
-        
-        return menu
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(refreshDisplay),
+            name: .selectedSymbolsChanged,
+            object: nil
+        )
     }
-    
+
     private func createCurrencyMenuItem(for currency: CryptoCurrency) -> NSMenuItem {
-        let price = webSocketManager.prices[currency.symbol] ?? "Loading..."
-        let change = webSocketManager.priceChanges[currency.symbol] ?? "-"
-        let isSelected = webSocketManager.selectedSymbols.contains(currency.symbol)
-        let isConnected = webSocketManager.isConnected(for: currency.symbol)
-        
-        let title = formatCurrencyTitle(
-            code: currency.code,
-            name: currency.name,
-            price: price,
-            change: change,
-            icon: currency.icon,
-            isConnected: isConnected
-        )
-        
-        let item = NSMenuItem(title: title, action: #selector(toggleCrypto(_:)), keyEquivalent: "")
+        let item = NSMenuItem(title: "", action: #selector(toggleCrypto(_:)), keyEquivalent: "")
         item.representedObject = currency.symbol
-        item.state = isSelected ? .on : .off
         item.target = self
-
-        item.attributedTitle = createAttributedTitle(
-            code: currency.code,
-            name: currency.name,
-            price: price,
-            change: change,
-            icon: currency.icon,
-            isConnected: isConnected
-        )
+        updateCurrencyMenuItem(item, for: currency)
         
         return item
     }
@@ -121,6 +100,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         item.target = self
         return item
+    }
+
+    private func updateCurrencyMenuItem(_ item: NSMenuItem, for currency: CryptoCurrency) {
+        let price = webSocketManager.prices[currency.symbol] ?? "Loading..."
+        let change = webSocketManager.priceChanges[currency.symbol] ?? "-"
+        let isSelected = webSocketManager.selectedSymbols.contains(currency.symbol)
+        let isConnected = webSocketManager.isConnected(for: currency.symbol)
+
+        item.title = formatCurrencyTitle(
+            code: currency.code,
+            name: currency.name,
+            price: price,
+            change: change,
+            icon: currency.icon,
+            isConnected: isConnected
+        )
+        item.state = isSelected ? .on : .off
+        item.attributedTitle = createAttributedTitle(
+            code: currency.code,
+            name: currency.name,
+            price: price,
+            change: change,
+            icon: currency.icon,
+            isConnected: isConnected
+        )
+    }
+
+    private func refreshMenuItems() {
+        for currency in webSocketManager.availableCurrencies {
+            guard let item = currencyMenuItems[currency.symbol] else { continue }
+            updateCurrencyMenuItem(item, for: currency)
+        }
     }
 
     private func formatCurrencyTitle(code: String, name: String, price: String, change: String, icon: String, isConnected: Bool) -> String {
@@ -173,15 +184,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return String(format: "%+.2f%%", changeValue)
     }
 
-    private func startPriceUpdates() {
-        statusBarTimer?.invalidate()
-        statusBarTimer = Timer.scheduledTimer(withTimeInterval: AppConfiguration.UI.statusBarUpdateInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.updateStatusBarTitle()
-            }
-        }
-    }
-    
     private func updateStatusBarTitle() {
         guard let button = statusBarItem.button else { return }
         
@@ -212,8 +214,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return selectedPrices.isEmpty ? "CRYPTO TICKER" : selectedPrices.joined(separator: " | ")
     }
 
-    @objc private func statusBarButtonClicked() {}
-    
     @objc private func toggleCrypto(_ sender: NSMenuItem) {
         guard let symbol = sender.representedObject as? String else {
             logger.error("Invalid symbol in menu item")
@@ -223,8 +223,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         webSocketManager.toggleCryptoSelection(symbol)
     }
     
-    @objc private func updateMenu() {
-        statusBarItem.menu = createMenu()
+    @objc private func refreshDisplay() {
+        refreshMenuItems()
+        updateStatusBarTitle()
     }
     
     @objc private func quitApp() {
@@ -237,7 +238,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         Task {
-            await webSocketManager.fetchAllCryptoPrices()
+            await webSocketManager.refreshMenuDataIfNeeded()
         }
     }
     

@@ -3,7 +3,6 @@ import os.log
 
 enum WebSocketError: Error {
     case invalidURL
-    case connectionFailed
     case dataParsingFailed
     case invalidResponse(Int)
     case networkError(Error)
@@ -48,10 +47,22 @@ class WebSocketManager: ObservableObject {
     
     private var webSocketTasks: [String: URLSessionWebSocketTask] = [:]
     private var reconnectTasks: [String: Task<Void, Never>] = [:]
+    private var lastPriceUpdatedAt: [String: Date] = [:]
     private let urlSession = URLSession(configuration: .default)
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "WebSocketManager")
     
     let availableCurrencies = CryptoCurrency.availableCurrencies
+
+    private static let wholeNumberPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 0)
+    private static let twoDecimalPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 2)
+    private static let fourDecimalPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 4)
+    private static let percentFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 2
+        formatter.positivePrefix = "+"
+        return formatter
+    }()
     
     init() {
         loadSelectedCryptos()
@@ -73,37 +84,35 @@ class WebSocketManager: ObservableObject {
 
     func fetchAllCryptoPrices() async {
         logger.info("Fetching prices for all \(self.availableCurrencies.count) cryptocurrencies")
-
-        var snapshots: [PriceSnapshot] = []
-
-        await withTaskGroup(of: Result<PriceSnapshot, Error>.self) { group in
-            for currency in availableCurrencies {
-                group.addTask {
-                    do {
-                        return .success(try await Self.fetchPriceSnapshot(for: currency.symbol))
-                    } catch {
-                        return .failure(error)
-                    }
-                }
-            }
-
-            for await result in group {
-                switch result {
-                case .success(let snapshot):
-                    snapshots.append(snapshot)
-                case .failure(let error):
-                    logger.error("Failed to fetch a cryptocurrency price: \(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
-
-        for snapshot in snapshots {
-            prices[snapshot.symbol] = formatPrice(snapshot.price)
-            priceChanges[snapshot.symbol] = formatPercent(snapshot.change) + "%"
-        }
-
-        NotificationCenter.default.post(name: .priceUpdated, object: nil)
+        await fetchPrices(for: availableCurrencies.map(\.symbol))
         logger.info("Completed fetching all cryptocurrency prices")
+    }
+
+    func refreshMenuDataIfNeeded() async {
+        let now = Date()
+        let symbolsToRefresh = availableCurrencies.compactMap { currency -> String? in
+            let symbol = currency.symbol
+
+            if prices[symbol] == nil || priceChanges[symbol] == nil {
+                return symbol
+            }
+
+            if selectedSymbols.contains(symbol) {
+                return nil
+            }
+
+            guard let lastUpdatedAt = lastPriceUpdatedAt[symbol] else {
+                return symbol
+            }
+
+            let age = now.timeIntervalSince(lastUpdatedAt)
+            return age >= AppConfiguration.WebSocket.snapshotRefreshInterval ? symbol : nil
+        }
+
+        guard !symbolsToRefresh.isEmpty else { return }
+
+        logger.info("Refreshing \(symbolsToRefresh.count) stale menu snapshots")
+        await fetchPrices(for: symbolsToRefresh)
     }
 
     nonisolated private static func fetchPriceSnapshot(for symbol: String) async throws -> PriceSnapshot {
@@ -203,7 +212,13 @@ class WebSocketManager: ObservableObject {
             return
         }
 
-        prices[symbol] = formatPrice(priceStr)
+        let formattedPrice = formatPrice(priceStr)
+        let previousPrice = prices[symbol]
+        prices[symbol] = formattedPrice
+        lastPriceUpdatedAt[symbol] = Date()
+
+        guard previousPrice != formattedPrice else { return }
+
         NotificationCenter.default.post(name: .priceUpdated, object: nil)
     }
     
@@ -240,22 +255,21 @@ class WebSocketManager: ObservableObject {
         }
         saveSelectedCryptos()
         connectWebSockets()
+        NotificationCenter.default.post(name: .selectedSymbolsChanged, object: nil)
     }
     
 
     private func formatPrice(_ price: String) -> String {
         guard let priceDouble = Double(price) else { return price }
 
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.groupingSeparator = ","
-        formatter.usesGroupingSeparator = true
-
-        formatter.maximumFractionDigits = {
+        let formatter: NumberFormatter = {
             switch priceDouble {
-            case 1000...: return 0  // >= 1000, no decimal digits
-            case 1..<1000: return 2  // >= 1, 2 decimal digits
-            default: return 4         // < 1, 4 decimal digits
+            case 1000...:
+                return Self.wholeNumberPriceFormatter
+            case 1..<1000:
+                return Self.twoDecimalPriceFormatter
+            default:
+                return Self.fourDecimalPriceFormatter
             }
         }()
 
@@ -264,13 +278,7 @@ class WebSocketManager: ObservableObject {
     
     private func formatPercent(_ percent: String) -> String {
         guard let percentDouble = Double(percent) else { return percent }
-
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = 2
-        formatter.positivePrefix = "+"
-
-        return formatter.string(from: NSNumber(value: percentDouble)) ?? percent
+        return Self.percentFormatter.string(from: NSNumber(value: percentDouble)) ?? percent
     }
 
     func getCurrency(for symbol: String) -> CryptoCurrency? {
@@ -307,5 +315,64 @@ class WebSocketManager: ObservableObject {
     private func cancelReconnect(for symbol: String) {
         reconnectTasks[symbol]?.cancel()
         reconnectTasks.removeValue(forKey: symbol)
+    }
+
+    private func fetchPrices(for symbols: [String]) async {
+        guard !symbols.isEmpty else { return }
+
+        var snapshots: [PriceSnapshot] = []
+
+        await withTaskGroup(of: Result<PriceSnapshot, Error>.self) { group in
+            for symbol in symbols {
+                group.addTask {
+                    do {
+                        return .success(try await Self.fetchPriceSnapshot(for: symbol))
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+
+            for await result in group {
+                switch result {
+                case .success(let snapshot):
+                    snapshots.append(snapshot)
+                case .failure(let error):
+                    logger.error("Failed to fetch a cryptocurrency price: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+
+        var didChangeAnyValue = false
+        let now = Date()
+
+        for snapshot in snapshots {
+            lastPriceUpdatedAt[snapshot.symbol] = now
+
+            let formattedPrice = formatPrice(snapshot.price)
+            let formattedChange = formatPercent(snapshot.change) + "%"
+
+            if prices[snapshot.symbol] != formattedPrice {
+                prices[snapshot.symbol] = formattedPrice
+                didChangeAnyValue = true
+            }
+
+            if priceChanges[snapshot.symbol] != formattedChange {
+                priceChanges[snapshot.symbol] = formattedChange
+                didChangeAnyValue = true
+            }
+        }
+
+        guard didChangeAnyValue else { return }
+        NotificationCenter.default.post(name: .priceUpdated, object: nil)
+    }
+
+    nonisolated private static func makeDecimalFormatter(maximumFractionDigits: Int) -> NumberFormatter {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.groupingSeparator = ","
+        formatter.usesGroupingSeparator = true
+        formatter.maximumFractionDigits = maximumFractionDigits
+        return formatter
     }
 }

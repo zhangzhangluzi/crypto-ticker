@@ -41,7 +41,7 @@ jobs:
         run: |
           xcodebuild \
             -project CryptoTicker.xcodeproj \
-            -target CryptoTicker \
+            -scheme CryptoTicker \
             -configuration Release \
             -destination "platform=macOS" \
             CONFIGURATION_BUILD_DIR="$PWD/build/Release" \
