@@ -16,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currencyMenuItems: [String: NSMenuItem] = [:]
     private var pendingMenuRefreshSymbols: Set<String> = []
     private var isMenuOpen = false
+    private var shouldPresentMenuAfterLaunch = true
     private let appLaunchResolver = AppLaunchResolver()
     private lazy var webSocketManager = WebSocketManager()
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppDelegate")
@@ -49,6 +50,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenu()
         setupObservers()
         refreshDisplay(forceMenuRefresh: true, forceStatusBarRefresh: true)
+        presentStatusMenuIfNeeded()
         logger.info("Application launched successfully")
     }
     
@@ -56,6 +58,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         logger.info("Application terminating...")
         NotificationCenter.default.removeObserver(self)
         webSocketManager.disconnectWebSockets()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        presentStatusMenu()
+        return false
     }
 
     private func setupStatusBarItem() {
@@ -88,6 +95,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarMenu.addItem(.separator())
         statusBarMenu.addItem(createQuitMenuItem())
         statusBarItem.menu = statusBarMenu
+    }
+
+    private func presentStatusMenuIfNeeded() {
+        guard shouldPresentMenuAfterLaunch else { return }
+        shouldPresentMenuAfterLaunch = false
+
+        DispatchQueue.main.async { [weak self] in
+            self?.presentStatusMenu()
+        }
+    }
+
+    private func presentStatusMenu() {
+        guard let button = statusBarItem.button else { return }
+        button.performClick(nil)
     }
     
     private func setupObservers() {

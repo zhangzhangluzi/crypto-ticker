@@ -23,11 +23,6 @@ struct CryptoTickerApp: App {
     }
 
     var body: some Scene {
-        Window(AppConfiguration.appName, id: "main") {
-            ContentView()
-        }
-        .defaultSize(width: 460, height: 280)
-
         Settings {
             EmptyView()
         }

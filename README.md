@@ -23,9 +23,9 @@
 > Because publishing apps cost money, and I’d rather **HODL** my crypto.
 
 1. Download **`CryptoTicker.pkg`** from the [latest release](https://github.com/zhangzhangluzi/crypto-ticker/releases).
-2. Run the installer package. It installs **CryptoTicker** into **Applications**, updates the existing copy in place, and launches it in the foreground for you.
-3. **CryptoTicker** appears in **Applications**, Launchpad, and the Dock like a normal macOS app. Click the doge icon to launch it.
-4. After launch, **CryptoTicker opens a small window** so you can see it started. Live prices also stay in the top-right menu bar while the app runs.
+2. Run the installer package. It installs **CryptoTicker** into **Applications**, updates the existing copy in place, and launches it for you.
+3. **CryptoTicker** appears in **Applications** and Launchpad. Click the doge icon to launch it.
+4. Launching **CryptoTicker** opens its top-right menu bar menu immediately. The app runs in the menu bar and does not stay in the Dock while active.
 5. Open the app. macOS may warn that the app is from an unidentified developer.
    - Right-click **CryptoTicker** in Finder and choose **Open**.
    - Or go to **System Settings** → **Privacy & Security** and click **Open Anyway**.
