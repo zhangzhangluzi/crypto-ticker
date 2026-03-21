@@ -58,6 +58,11 @@ jobs:
             exit 1
           fi
 
+          # Generate a complete app bundle signature so Gatekeeper does not
+          # treat the downloaded release artifact as structurally damaged.
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" CryptoTicker.zip
 
       - name: Upload release asset

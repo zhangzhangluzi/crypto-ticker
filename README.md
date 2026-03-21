@@ -24,10 +24,9 @@
 
 1. Download and unzip **`CryptoTicker.zip`** from the [latest release](https://github.com/zhangzhangluzi/crypto-ticker/releases).
 2. Move **CryptoTicker** to your **Applications** folder.
-3. Open the app. macOS will likely complain that this app is "unverified."
-   - Go to **System Preferences** → **Security & Privacy**.
-   - Under the **Security** section, find the warning about **CryptoTicker**.
-   - Click **"Open Anyway"** to trust the app.
+3. Open the app. macOS may warn that the app is from an unidentified developer.
+   - Right-click **CryptoTicker** in Finder and choose **Open**.
+   - Or go to **System Settings** → **Privacy & Security** and click **Open Anyway**.
 4. If the release asset is still processing, use the development steps below to build from source.
 
 ## Development
