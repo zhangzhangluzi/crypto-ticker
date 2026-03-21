@@ -107,8 +107,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentStatusMenu() {
-        guard let button = statusBarItem.button else { return }
-        button.performClick(nil)
+        guard let button = statusBarItem.button,
+              let window = button.window else {
+            return
+        }
+
+        let buttonRectInWindow = button.convert(button.bounds, to: nil)
+        let buttonRectOnScreen = window.convertToScreen(buttonRectInWindow)
+        let menuOrigin = NSPoint(
+            x: buttonRectOnScreen.maxX - statusBarMenu.size.width,
+            y: buttonRectOnScreen.minY - 4
+        )
+
+        statusBarMenu.popUp(positioning: nil, at: menuOrigin, in: nil)
     }
     
     private func setupObservers() {
