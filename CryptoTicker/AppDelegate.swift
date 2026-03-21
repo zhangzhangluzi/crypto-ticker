@@ -16,7 +16,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currencyMenuItems: [String: NSMenuItem] = [:]
     private var pendingMenuRefreshSymbols: Set<String> = []
     private var isMenuOpen = false
-    private let appInstaller = AppInstaller()
     private lazy var webSocketManager = WebSocketManager()
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppDelegate")
 
@@ -39,12 +38,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("Application launching...")
-
-        guard appInstaller.prepareForLaunch() else {
-            logger.info("Launch handed off to installer")
-            return
-        }
-
         setupStatusBarItem()
         setupMenu()
         setupObservers()
