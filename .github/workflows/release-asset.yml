@@ -1,6 +1,9 @@
 name: Release Asset
 
 on:
+  push:
+    tags:
+      - "v*"
   release:
     types:
       - published
@@ -25,6 +28,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.release_tag }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
           else
             TAG="${{ github.event.release.tag_name }}"
           fi
@@ -96,6 +101,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh release view "${{ steps.release.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+          gh release create "${{ steps.release.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "${{ steps.release.outputs.tag }}" \
+            --notes ""
+
           gh release upload "${{ steps.release.outputs.tag }}" CryptoTicker.zip CryptoTicker.pkg \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
