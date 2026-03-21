@@ -33,7 +33,6 @@ struct AppConfiguration {
 
     struct UserDefaultsKeys {
         static let selectedCryptos = "selectedCryptos"
-        static let hasShownMenuBarTip = "hasShownMenuBarTip"
     }
 
     struct Logging {

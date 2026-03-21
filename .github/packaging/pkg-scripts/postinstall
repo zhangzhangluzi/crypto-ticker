@@ -17,6 +17,6 @@ if [ -z "$USER_ID" ]; then
   exit 0
 fi
 
-/bin/launchctl asuser "$USER_ID" /usr/bin/open -gj "$APP_PATH" >/dev/null 2>&1 || true
+/bin/launchctl asuser "$USER_ID" /usr/bin/open -a "$APP_PATH" >/dev/null 2>&1 || true
 
 exit 0
