@@ -69,12 +69,27 @@ jobs:
         shell: bash
         run: |
           APP_PATH="build/Release/CryptoTicker.app"
+          PKG_ROOT="$PWD/build/pkgroot"
+          COMPONENT_PLIST="$PWD/build/components.plist"
           PKG_PATH="CryptoTicker.pkg"
+          PACKAGE_VERSION="${{ steps.release.outputs.tag }}"
+          PACKAGE_VERSION="${PACKAGE_VERSION#v}"
+
+          rm -rf "$PKG_ROOT" "$COMPONENT_PLIST"
+          mkdir -p "$PKG_ROOT/Applications"
+          ditto "$APP_PATH" "$PKG_ROOT/Applications/CryptoTicker.app"
+
+          pkgbuild --analyze --root "$PKG_ROOT" "$COMPONENT_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$COMPONENT_PLIST"
 
           pkgbuild \
-            --component "$APP_PATH" \
+            --root "$PKG_ROOT" \
+            --component-plist "$COMPONENT_PLIST" \
+            --identifier "io.github.zhangzhangluzi.cryptoticker" \
+            --version "$PACKAGE_VERSION" \
             --scripts "$PWD/.github/packaging/pkg-scripts" \
-            --install-location "/Applications" \
+            --install-location "/" \
+            --ownership recommended \
             "$PKG_PATH"
 
       - name: Upload release assets
