@@ -9,7 +9,7 @@ import Foundation
 
 struct AppConfiguration {
     static let appName = "CryptoTicker"
-    static let version = "1.1.2"
+    static let version = "1.1.3"
     static let bundleIdentifier = "io.github.zhangzhangluzi.cryptoticker"
 
     struct API {

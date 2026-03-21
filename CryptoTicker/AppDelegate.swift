@@ -206,7 +206,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             let price = webSocketManager.prices[symbol] ?? "--"
-            return "\(currency.icon) \(price) \(connectionIndicator)".trimmingCharacters(in: .whitespaces)
+            return "\(currency.code) \(price) \(connectionIndicator)".trimmingCharacters(in: .whitespaces)
         }
 
         return selectedPrices.isEmpty ? "CRYPTO TICKER" : selectedPrices.joined(separator: " | ")
