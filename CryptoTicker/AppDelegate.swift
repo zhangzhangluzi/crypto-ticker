@@ -14,15 +14,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarItem: NSStatusItem!
     private let statusBarMenu = NSMenu()
     private var currencyMenuItems: [String: NSMenuItem] = [:]
+    private var pendingMenuRefreshSymbols: Set<String> = []
+    private var isMenuOpen = false
     private let webSocketManager = WebSocketManager()
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppDelegate")
+
+    private static let menuParagraphStyle: NSParagraphStyle = {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.tabStops = [
+            NSTextTab(textAlignment: .left, location: 30, options: [:]),
+            NSTextTab(textAlignment: .left, location: 80, options: [:]),
+            NSTextTab(textAlignment: .left, location: 180, options: [:]),
+            NSTextTab(textAlignment: .left, location: 280, options: [:]),
+            NSTextTab(textAlignment: .left, location: 360, options: [:])
+        ]
+        return paragraphStyle.copy() as? NSParagraphStyle ?? paragraphStyle
+    }()
+
+    private static let menuBaseAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont(name: AppConfiguration.UI.menuFont, size: AppConfiguration.UI.menuFontSize) ?? NSFont.monospacedSystemFont(ofSize: AppConfiguration.UI.menuFontSize, weight: .regular),
+        .paragraphStyle: menuParagraphStyle
+    ]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("Application launching...")
         setupStatusBarItem()
         setupMenu()
         setupObservers()
-        refreshDisplay()
+        refreshDisplay(forceMenuRefresh: true, forceStatusBarRefresh: true)
         logger.info("Application launched successfully")
     }
     
@@ -67,21 +86,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupObservers() {
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(refreshDisplay),
+            selector: #selector(handlePriceUpdated(_:)),
             name: .priceUpdated,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(refreshDisplay),
+            selector: #selector(handleConnectionStateChanged(_:)),
             name: .connectionStateChanged,
             object: nil
         )
 
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(refreshDisplay),
+            selector: #selector(handleSelectedSymbolsChanged(_:)),
             name: .selectedSymbolsChanged,
             object: nil
         )
@@ -127,9 +146,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func refreshMenuItems() {
-        for currency in webSocketManager.availableCurrencies {
-            guard let item = currencyMenuItems[currency.symbol] else { continue }
+    private func refreshMenuItems(for symbols: Set<String>) {
+        for symbol in symbols {
+            guard let item = currencyMenuItems[symbol],
+                  let currency = webSocketManager.getCurrency(for: symbol) else {
+                continue
+            }
             updateCurrencyMenuItem(item, for: currency)
         }
     }
@@ -140,48 +162,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func createAttributedTitle(code: String, name: String, price: String, change: String, icon: String, isConnected: Bool) -> NSAttributedString {
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.tabStops = [
-            NSTextTab(textAlignment: .left, location: 30, options: [:]),   // Status + Icon
-            NSTextTab(textAlignment: .left, location: 80, options: [:]),   // Code
-            NSTextTab(textAlignment: .left, location: 180, options: [:]),  // Name
-            NSTextTab(textAlignment: .left, location: 280, options: [:]),  // Price
-            NSTextTab(textAlignment: .left, location: 360, options: [:])   // Change
-        ]
-        
-        let baseAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont(name: AppConfiguration.UI.menuFont, size: AppConfiguration.UI.menuFontSize) ?? NSFont.monospacedSystemFont(ofSize: AppConfiguration.UI.menuFontSize, weight: .regular),
-            .paragraphStyle: paragraphStyle
-        ]
-        
         let statusColor: NSColor = isConnected ? .systemGreen : .systemRed
-        let changeColor: NSColor = {
-            if let changeValue = Double(change.replacingOccurrences(of: "%", with: "").replacingOccurrences(of: "+", with: "")) {
-                return changeValue >= 0 ? .systemGreen : .systemRed
-            }
-            return .secondaryLabelColor
-        }()
+        let changeColor = color(forPriceChange: change)
         
         let status = isConnected ? "●" : "○"
-        let fullText = "\(status)\t\(icon) \(code)\t\(name)\t\(price) USDT\t\(formatPriceChange(change))"
+        let fullText = "\(status)\t\(icon) \(code)\t\(name)\t\(price) USDT\t\(change)"
         
-        let attributedString = NSMutableAttributedString(string: fullText, attributes: baseAttributes)
+        let attributedString = NSMutableAttributedString(string: fullText, attributes: Self.menuBaseAttributes)
 
         attributedString.addAttribute(.foregroundColor, value: statusColor, range: NSRange(location: 0, length: 1))
 
-        if let changeRange = fullText.range(of: formatPriceChange(change)) {
+        if let changeRange = fullText.range(of: change) {
             let nsRange = NSRange(changeRange, in: fullText)
             attributedString.addAttribute(.foregroundColor, value: changeColor, range: nsRange)
         }
         
         return attributedString
     }
-    
-    private func formatPriceChange(_ change: String) -> String {
-        guard let changeValue = Double(change.replacingOccurrences(of: "%", with: "").replacingOccurrences(of: "+", with: "")) else {
-            return change
+
+    private func color(forPriceChange change: String) -> NSColor {
+        if change == "-" {
+            return .secondaryLabelColor
         }
-        return String(format: "%+.2f%%", changeValue)
+        return change.hasPrefix("-") ? .systemRed : .systemGreen
     }
 
     private func updateStatusBarTitle() {
@@ -223,9 +226,58 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         webSocketManager.toggleCryptoSelection(symbol)
     }
     
-    @objc private func refreshDisplay() {
-        refreshMenuItems()
-        updateStatusBarTitle()
+    private func notificationSymbols(from notification: Notification) -> Set<String>? {
+        if let symbols = notification.userInfo?[NotificationUserInfoKey.symbols] as? [String] {
+            return Set(symbols)
+        }
+
+        if let symbol = notification.userInfo?[NotificationUserInfoKey.symbol] as? String {
+            return [symbol]
+        }
+
+        return nil
+    }
+
+    private func refreshDisplay(
+        for symbols: Set<String>? = nil,
+        forceMenuRefresh: Bool = false,
+        forceStatusBarRefresh: Bool = false
+    ) {
+        if forceStatusBarRefresh || shouldRefreshStatusBar(for: symbols) {
+            updateStatusBarTitle()
+        }
+
+        let symbolsToRefresh = symbols ?? Set(currencyMenuItems.keys)
+        guard !symbolsToRefresh.isEmpty else { return }
+
+        if forceMenuRefresh || isMenuOpen {
+            refreshMenuItems(for: symbolsToRefresh)
+            pendingMenuRefreshSymbols.subtract(symbolsToRefresh)
+        } else {
+            pendingMenuRefreshSymbols.formUnion(symbolsToRefresh)
+        }
+    }
+
+    private func shouldRefreshStatusBar(for symbols: Set<String>?) -> Bool {
+        guard let symbols else { return true }
+        let selectedSymbolSet = Set(webSocketManager.selectedSymbols)
+        return !selectedSymbolSet.isDisjoint(with: symbols)
+    }
+
+    @objc private func handlePriceUpdated(_ notification: Notification) {
+        refreshDisplay(for: notificationSymbols(from: notification))
+    }
+
+    @objc private func handleConnectionStateChanged(_ notification: Notification) {
+        refreshDisplay(for: notificationSymbols(from: notification))
+    }
+
+    @objc private func handleSelectedSymbolsChanged(_ notification: Notification) {
+        refreshDisplay(
+            for: notificationSymbols(from: notification),
+            forceMenuRefresh: isMenuOpen,
+            forceStatusBarRefresh: true
+        )
     }
     
     @objc private func quitApp() {
@@ -237,10 +289,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
+        isMenuOpen = true
+
+        if !pendingMenuRefreshSymbols.isEmpty {
+            let dirtySymbols = pendingMenuRefreshSymbols
+            pendingMenuRefreshSymbols.removeAll()
+            refreshMenuItems(for: dirtySymbols)
+        }
+
         Task {
             await webSocketManager.refreshMenuDataIfNeeded()
         }
     }
     
-    func menuDidClose(_ menu: NSMenu) {}
+    func menuDidClose(_ menu: NSMenu) {
+        isMenuOpen = false
+    }
 }

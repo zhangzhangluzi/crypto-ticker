@@ -9,7 +9,7 @@ import Foundation
 
 struct AppConfiguration {
     static let appName = "CryptoTicker"
-    static let version = "1.2.0"
+    static let version = "1.3.0"
     static let bundleIdentifier = "io.github.zhangzhangluzi.cryptoticker"
 
     struct API {
@@ -54,4 +54,10 @@ extension Notification.Name {
     static let priceUpdated = Notification.Name("PriceUpdated")
     static let connectionStateChanged = Notification.Name("ConnectionStateChanged")
     static let selectedSymbolsChanged = Notification.Name("SelectedSymbolsChanged")
+}
+
+enum NotificationUserInfoKey {
+    static let symbol = "symbol"
+    static let symbols = "symbols"
+    static let state = "state"
 }

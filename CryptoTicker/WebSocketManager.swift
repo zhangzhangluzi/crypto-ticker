@@ -47,12 +47,13 @@ class WebSocketManager: ObservableObject {
     
     private var webSocketTasks: [String: URLSessionWebSocketTask] = [:]
     private var reconnectTasks: [String: Task<Void, Never>] = [:]
-    private var lastPriceUpdatedAt: [String: Date] = [:]
+    private var lastSnapshotUpdatedAt: [String: Date] = [:]
     private let urlSession = URLSession(configuration: .default)
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "WebSocketManager")
     
     let availableCurrencies = CryptoCurrency.availableCurrencies
 
+    private static let currenciesBySymbol = Dictionary(uniqueKeysWithValues: CryptoCurrency.availableCurrencies.map { ($0.symbol, $0) })
     private static let wholeNumberPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 0)
     private static let twoDecimalPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 2)
     private static let fourDecimalPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 4)
@@ -72,9 +73,7 @@ class WebSocketManager: ObservableObject {
 
     private func loadSelectedCryptos() {
         let persistedSymbols = UserDefaults.standard.array(forKey: AppConfiguration.UserDefaultsKeys.selectedCryptos) as? [String] ?? AppConfiguration.Defaults.selectedCryptos
-        let validSymbols = persistedSymbols.filter { symbol in
-            availableCurrencies.contains { $0.symbol == symbol }
-        }
+        let validSymbols = persistedSymbols.filter { Self.currenciesBySymbol[$0] != nil }
         selectedSymbols = validSymbols.isEmpty ? AppConfiguration.Defaults.selectedCryptos : validSymbols
     }
     
@@ -84,7 +83,7 @@ class WebSocketManager: ObservableObject {
 
     func fetchAllCryptoPrices() async {
         logger.info("Fetching prices for all \(self.availableCurrencies.count) cryptocurrencies")
-        await fetchPrices(for: availableCurrencies.map(\.symbol))
+        await fetchPrices(for: availableCurrencies.map(\.symbol), updateSelectedSymbolsPrices: true)
         logger.info("Completed fetching all cryptocurrency prices")
     }
 
@@ -97,11 +96,7 @@ class WebSocketManager: ObservableObject {
                 return symbol
             }
 
-            if selectedSymbols.contains(symbol) {
-                return nil
-            }
-
-            guard let lastUpdatedAt = lastPriceUpdatedAt[symbol] else {
+            guard let lastUpdatedAt = lastSnapshotUpdatedAt[symbol] else {
                 return symbol
             }
 
@@ -112,7 +107,7 @@ class WebSocketManager: ObservableObject {
         guard !symbolsToRefresh.isEmpty else { return }
 
         logger.info("Refreshing \(symbolsToRefresh.count) stale menu snapshots")
-        await fetchPrices(for: symbolsToRefresh)
+        await fetchPrices(for: symbolsToRefresh, updateSelectedSymbolsPrices: false)
     }
 
     nonisolated private static func fetchPriceSnapshot(for symbol: String) async throws -> PriceSnapshot {
@@ -215,11 +210,14 @@ class WebSocketManager: ObservableObject {
         let formattedPrice = formatPrice(priceStr)
         let previousPrice = prices[symbol]
         prices[symbol] = formattedPrice
-        lastPriceUpdatedAt[symbol] = Date()
 
         guard previousPrice != formattedPrice else { return }
 
-        NotificationCenter.default.post(name: .priceUpdated, object: nil)
+        NotificationCenter.default.post(
+            name: .priceUpdated,
+            object: nil,
+            userInfo: [NotificationUserInfoKey.symbols: [symbol]]
+        )
     }
     
     private func updateConnectionState(for symbol: String, state: ConnectionState) {
@@ -227,7 +225,10 @@ class WebSocketManager: ObservableObject {
         NotificationCenter.default.post(
             name: .connectionStateChanged,
             object: nil,
-            userInfo: ["symbol": symbol, "state": state]
+            userInfo: [
+                NotificationUserInfoKey.symbol: symbol,
+                NotificationUserInfoKey.state: state
+            ]
         )
     }
     
@@ -255,7 +256,11 @@ class WebSocketManager: ObservableObject {
         }
         saveSelectedCryptos()
         connectWebSockets()
-        NotificationCenter.default.post(name: .selectedSymbolsChanged, object: nil)
+        NotificationCenter.default.post(
+            name: .selectedSymbolsChanged,
+            object: nil,
+            userInfo: [NotificationUserInfoKey.symbol: symbol]
+        )
     }
     
 
@@ -282,7 +287,7 @@ class WebSocketManager: ObservableObject {
     }
 
     func getCurrency(for symbol: String) -> CryptoCurrency? {
-        return availableCurrencies.first { $0.symbol == symbol }
+        Self.currenciesBySymbol[symbol]
     }
     
     func isConnected(for symbol: String) -> Bool {
@@ -317,7 +322,7 @@ class WebSocketManager: ObservableObject {
         reconnectTasks.removeValue(forKey: symbol)
     }
 
-    private func fetchPrices(for symbols: [String]) async {
+    private func fetchPrices(for symbols: [String], updateSelectedSymbolsPrices: Bool) async {
         guard !symbols.isEmpty else { return }
 
         var snapshots: [PriceSnapshot] = []
@@ -343,28 +348,39 @@ class WebSocketManager: ObservableObject {
             }
         }
 
-        var didChangeAnyValue = false
+        var changedSymbols: [String] = []
         let now = Date()
 
         for snapshot in snapshots {
-            lastPriceUpdatedAt[snapshot.symbol] = now
+            lastSnapshotUpdatedAt[snapshot.symbol] = now
 
             let formattedPrice = formatPrice(snapshot.price)
             let formattedChange = formatPercent(snapshot.change) + "%"
+            var didChangeSymbol = false
 
-            if prices[snapshot.symbol] != formattedPrice {
+            let shouldUpdateDisplayedPrice = updateSelectedSymbolsPrices || !selectedSymbols.contains(snapshot.symbol) || prices[snapshot.symbol] == nil
+
+            if shouldUpdateDisplayedPrice, prices[snapshot.symbol] != formattedPrice {
                 prices[snapshot.symbol] = formattedPrice
-                didChangeAnyValue = true
+                didChangeSymbol = true
             }
 
             if priceChanges[snapshot.symbol] != formattedChange {
                 priceChanges[snapshot.symbol] = formattedChange
-                didChangeAnyValue = true
+                didChangeSymbol = true
+            }
+
+            if didChangeSymbol {
+                changedSymbols.append(snapshot.symbol)
             }
         }
 
-        guard didChangeAnyValue else { return }
-        NotificationCenter.default.post(name: .priceUpdated, object: nil)
+        guard !changedSymbols.isEmpty else { return }
+        NotificationCenter.default.post(
+            name: .priceUpdated,
+            object: nil,
+            userInfo: [NotificationUserInfoKey.symbols: changedSymbols]
+        )
     }
 
     nonisolated private static func makeDecimalFormatter(maximumFractionDigits: Int) -> NumberFormatter {
