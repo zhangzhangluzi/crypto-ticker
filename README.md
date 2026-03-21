@@ -22,12 +22,13 @@
 > **Why not in the App Store?**  
 > Because publishing apps cost money, and I’d rather **HODL** my crypto.
 
-1. Download and unzip **`CryptoTicker.zip`** from the [latest release](https://github.com/zhangzhangluzi/crypto-ticker/releases).
-2. Move **CryptoTicker** to your **Applications** folder.
-3. Open the app. macOS may warn that the app is from an unidentified developer.
+1. Download **`CryptoTicker.pkg`** from the [latest release](https://github.com/zhangzhangluzi/crypto-ticker/releases).
+2. Run the installer package. It installs **CryptoTicker** into **Applications** and updates the existing copy in place.
+3. If you use **`CryptoTicker.zip`** instead, the app will offer to install itself into **Applications** on first launch.
+4. Open the app. macOS may warn that the app is from an unidentified developer.
    - Right-click **CryptoTicker** in Finder and choose **Open**.
    - Or go to **System Settings** → **Privacy & Security** and click **Open Anyway**.
-4. If the release asset is still processing, use the development steps below to build from source.
+5. If the release asset is still processing, use the development steps below to build from source.
 
 ## Development
 

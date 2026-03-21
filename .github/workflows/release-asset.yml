@@ -65,10 +65,21 @@ jobs:
 
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" CryptoTicker.zip
 
-      - name: Upload release asset
+      - name: Build installer package
+        shell: bash
+        run: |
+          APP_PATH="build/Release/CryptoTicker.app"
+          PKG_PATH="CryptoTicker.pkg"
+
+          pkgbuild \
+            --component "$APP_PATH" \
+            --install-location "/Applications" \
+            "$PKG_PATH"
+
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ steps.release.outputs.tag }}" CryptoTicker.zip \
+          gh release upload "${{ steps.release.outputs.tag }}" CryptoTicker.zip CryptoTicker.pkg \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
