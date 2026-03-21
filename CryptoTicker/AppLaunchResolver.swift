@@ -10,7 +10,7 @@ final class AppLaunchResolver {
     func prepareForLaunch() -> Bool {
         let currentBundleURL = standardized(Bundle.main.bundleURL)
 
-        guard let installedBundleURL = preferredInstalledBundleURL(excluding: currentBundleURL) else {
+        guard let installedBundleURL = preferredLaunchBundleURL(for: currentBundleURL) else {
             return true
         }
 
@@ -34,28 +34,39 @@ final class AppLaunchResolver {
         }
     }
 
-    private func preferredInstalledBundleURL(excluding currentBundleURL: URL) -> URL? {
-        guard !isInstalledLocation(currentBundleURL) else {
-            return nil
+    private func preferredLaunchBundleURL(for currentBundleURL: URL) -> URL? {
+        let canonicalBundleURL = standardized(systemInstallCandidateURL)
+
+        if fileManager.fileExists(atPath: canonicalBundleURL.path),
+           canonicalBundleURL != currentBundleURL {
+            return canonicalBundleURL
         }
 
-        return installCandidateURLs.first { candidateURL in
-            let standardizedCandidateURL = standardized(candidateURL)
-            return standardizedCandidateURL != currentBundleURL && fileManager.fileExists(atPath: standardizedCandidateURL.path)
+        let fallbackBundleURL = standardized(userInstallCandidateURL)
+        if !isSystemInstallLocation(currentBundleURL),
+           fileManager.fileExists(atPath: fallbackBundleURL.path),
+           fallbackBundleURL != currentBundleURL {
+            return fallbackBundleURL
         }
+
+        return nil
     }
 
-    private func isInstalledLocation(_ bundleURL: URL) -> Bool {
-        let standardizedBundleURL = standardized(bundleURL)
-        return installCandidateURLs.contains { standardized($0) == standardizedBundleURL }
+    private func isSystemInstallLocation(_ bundleURL: URL) -> Bool {
+        standardized(bundleURL) == standardized(systemInstallCandidateURL)
     }
 
-    private var installCandidateURLs: [URL] {
-        [
-            URL(fileURLWithPath: "/Applications", isDirectory: true),
-            fileManager.urls(for: .applicationDirectory, in: .userDomainMask).first
-                ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Applications", isDirectory: true)
-        ].map { $0.appendingPathComponent("\(AppConfiguration.appName).app", isDirectory: true) }
+    private var systemInstallCandidateURL: URL {
+        URL(fileURLWithPath: "/Applications", isDirectory: true)
+            .appendingPathComponent("\(AppConfiguration.appName).app", isDirectory: true)
+    }
+
+    private var userInstallCandidateURL: URL {
+        let userApplicationsURL = fileManager.urls(for: .applicationDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                .appendingPathComponent("Applications", isDirectory: true)
+
+        return userApplicationsURL.appendingPathComponent("\(AppConfiguration.appName).app", isDirectory: true)
     }
 
     private func standardized(_ url: URL) -> URL {

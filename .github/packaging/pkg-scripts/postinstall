@@ -3,6 +3,8 @@
 APP_PATH="/Applications/CryptoTicker.app"
 CONSOLE_USER="$(/usr/bin/stat -f '%Su' /dev/console)"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+USER_HOME="$(/usr/bin/dscl . -read /Users/$CONSOLE_USER NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+USER_APP_PATH="$USER_HOME/Applications/CryptoTicker.app"
 
 if [ ! -d "$APP_PATH" ]; then
   exit 0
@@ -21,6 +23,9 @@ fi
 /usr/bin/touch "$APP_PATH" >/dev/null 2>&1 || true
 
 if [ -x "$LSREGISTER" ]; then
+  if [ -n "$USER_HOME" ] && [ -d "$USER_APP_PATH" ] && [ "$USER_APP_PATH" != "$APP_PATH" ]; then
+    /bin/launchctl asuser "$USER_ID" "$LSREGISTER" -u "$USER_APP_PATH" >/dev/null 2>&1 || true
+  fi
   /bin/launchctl asuser "$USER_ID" "$LSREGISTER" -f "$APP_PATH" >/dev/null 2>&1 || true
 fi
 
