@@ -13,6 +13,7 @@ import os.log
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarItem: NSStatusItem!
     private let statusBarMenu = NSMenu()
+    private let sourceMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var currencyMenuItems: [String: NSMenuItem] = [:]
     private var pendingMenuRefreshSymbols: Set<String> = []
     private var isMenuOpen = false
@@ -84,6 +85,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarMenu.removeAllItems()
         currencyMenuItems.removeAll()
 
+        updateSourceMenuItem()
+        statusBarMenu.addItem(sourceMenuItem)
         statusBarMenu.addItem(.separator())
 
         for currency in webSocketManager.availableCurrencies {
@@ -141,6 +144,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(handleSelectedSymbolsChanged(_:)),
             name: .selectedSymbolsChanged,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleProviderChanged(_:)),
+            name: .providerChanged,
             object: nil
         )
     }
@@ -253,7 +263,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return "\(currency.code) \(price) \(connectionIndicator)".trimmingCharacters(in: .whitespaces)
         }
 
-        return selectedPrices.isEmpty ? "CRYPTO TICKER" : selectedPrices.joined(separator: " | ")
+        let providerPrefix = webSocketManager.isUsingFallbackProvider ? "[OKX] " : ""
+        let baseText = selectedPrices.isEmpty ? "CRYPTO TICKER" : selectedPrices.joined(separator: " | ")
+        return providerPrefix + baseText
+    }
+
+    private func updateSourceMenuItem() {
+        sourceMenuItem.title = webSocketManager.providerStatusText
+        sourceMenuItem.isEnabled = false
     }
 
     @objc private func toggleCrypto(_ sender: NSMenuItem) {
@@ -317,6 +334,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             forceMenuRefresh: isMenuOpen,
             forceStatusBarRefresh: true
         )
+    }
+
+    @objc private func handleProviderChanged(_ notification: Notification) {
+        updateSourceMenuItem()
+        refreshDisplay(forceMenuRefresh: isMenuOpen, forceStatusBarRefresh: true)
     }
     
     @objc private func quitApp() {

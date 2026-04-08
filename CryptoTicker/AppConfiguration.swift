@@ -17,6 +17,8 @@ struct AppConfiguration {
     struct API {
         static let binanceBaseURL = "https://api.binance.com/api/v3"
         static let binanceWebSocketURL = "wss://stream.binance.com:9443/ws"
+        static let okxBaseURL = "https://www.okx.com/api/v5"
+        static let okxWebSocketURL = "wss://ws.okx.com:8443/ws/v5/public"
     }
 
     struct UI {
@@ -29,6 +31,11 @@ struct AppConfiguration {
     struct WebSocket {
         static let reconnectDelay: TimeInterval = 5.0
         static let snapshotRefreshInterval: TimeInterval = 30.0
+    }
+
+    struct ProviderFallback {
+        static let binanceFailureThreshold = 3
+        static let binanceRecoveryCheckInterval: TimeInterval = 3600.0
     }
 
     struct UserDefaultsKeys {
@@ -45,7 +52,9 @@ struct AppConfiguration {
 
     static func validate() -> Bool {
         guard URL(string: API.binanceBaseURL) != nil,
-              URL(string: API.binanceWebSocketURL) != nil else {
+              URL(string: API.binanceWebSocketURL) != nil,
+              URL(string: API.okxBaseURL) != nil,
+              URL(string: API.okxWebSocketURL) != nil else {
             return false
         }
         return true
@@ -56,10 +65,12 @@ extension Notification.Name {
     static let priceUpdated = Notification.Name("PriceUpdated")
     static let connectionStateChanged = Notification.Name("ConnectionStateChanged")
     static let selectedSymbolsChanged = Notification.Name("SelectedSymbolsChanged")
+    static let providerChanged = Notification.Name("ProviderChanged")
 }
 
 enum NotificationUserInfoKey {
     static let symbol = "symbol"
     static let symbols = "symbols"
     static let state = "state"
+    static let provider = "provider"
 }
