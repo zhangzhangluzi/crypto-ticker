@@ -263,9 +263,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return "\(currency.code) \(price) \(connectionIndicator)".trimmingCharacters(in: .whitespaces)
         }
 
-        let providerPrefix = webSocketManager.isUsingFallbackProvider ? "[OKX] " : ""
         let baseText = selectedPrices.isEmpty ? "CRYPTO TICKER" : selectedPrices.joined(separator: " | ")
-        return providerPrefix + baseText
+        return baseText
     }
 
     private func updateSourceMenuItem() {
