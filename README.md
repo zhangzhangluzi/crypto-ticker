@@ -2,7 +2,7 @@
 
 <img width="424" height="251" alt="image" src="https://github.com/user-attachments/assets/cf46218a-7a20-4459-b82f-4fa84bdf0239" />
 
-**CryptoTicker** is a lightweight macOS menu bar application that displays real-time Binance **USDT** spot prices from your menu bar.
+**CryptoTicker** is a lightweight macOS menu bar application that displays real-time **USDT** spot prices from your menu bar, with Binance as the primary source and automatic OKX fallback.
 
 ## Features
 
@@ -10,6 +10,7 @@
 - Multi-Crypto Support
 - 24h Price Percentage Change
 - Automatic WebSocket Reconnects
+- Automatic Binance -> OKX Fallback
 
 ## Requirements
 

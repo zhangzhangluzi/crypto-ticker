@@ -42,6 +42,66 @@ jobs:
         with:
           ref: ${{ steps.release.outputs.ref }}
 
+      - name: Resolve signing configuration
+        id: signing
+        shell: bash
+        env:
+          APP_CERT_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          INSTALLER_CERT_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_INSTALLER_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATES_PASSWORD }}
+          APP_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_IDENTITY }}
+          INSTALLER_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_INSTALLER_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          SIGNING_ENABLED=false
+          NOTARIZATION_ENABLED=false
+
+          if [ -n "$APP_CERT_BASE64" ] && [ -n "$INSTALLER_CERT_BASE64" ] && [ -n "$CERT_PASSWORD" ] && [ -n "$APP_IDENTITY" ] && [ -n "$INSTALLER_IDENTITY" ]; then
+            SIGNING_ENABLED=true
+          fi
+
+          if [ "$SIGNING_ENABLED" = true ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            NOTARIZATION_ENABLED=true
+          fi
+
+          echo "signing_enabled=$SIGNING_ENABLED" >> "$GITHUB_OUTPUT"
+          echo "notarization_enabled=$NOTARIZATION_ENABLED" >> "$GITHUB_OUTPUT"
+
+          if [ "$SIGNING_ENABLED" = false ]; then
+            echo "::warning::Developer ID signing secrets are not configured. Release artifacts will be unsigned."
+          elif [ "$NOTARIZATION_ENABLED" = false ]; then
+            echo "::warning::Notarization secrets are not configured. Release artifacts will be signed but not notarized."
+          fi
+
+      - name: Import Developer ID certificates
+        if: steps.signing.outputs.signing_enabled == 'true'
+        shell: bash
+        env:
+          APP_CERT_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          INSTALLER_CERT_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_INSTALLER_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATES_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/codesign.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          APP_CERT_PATH="$RUNNER_TEMP/developer-id-application.p12"
+          INSTALLER_CERT_PATH="$RUNNER_TEMP/developer-id-installer.p12"
+
+          printf '%s' "$APP_CERT_BASE64" | base64 --decode > "$APP_CERT_PATH" 2>/dev/null || \
+            printf '%s' "$APP_CERT_BASE64" | base64 -D > "$APP_CERT_PATH"
+          printf '%s' "$INSTALLER_CERT_BASE64" | base64 --decode > "$INSTALLER_CERT_PATH" 2>/dev/null || \
+            printf '%s' "$INSTALLER_CERT_BASE64" | base64 -D > "$INSTALLER_CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$APP_CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security import "$INSTALLER_CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
       - name: Build release app
         run: |
           xcodebuild \
@@ -56,6 +116,13 @@ jobs:
 
       - name: Package app
         shell: bash
+        env:
+          SIGNING_ENABLED: ${{ steps.signing.outputs.signing_enabled }}
+          NOTARIZATION_ENABLED: ${{ steps.signing.outputs.notarization_enabled }}
+          APP_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           APP_PATH="build/Release/CryptoTicker.app"
           if [ ! -d "$APP_PATH" ]; then
@@ -63,24 +130,46 @@ jobs:
             exit 1
           fi
 
-          # Generate a complete app bundle signature so Gatekeeper does not
-          # treat the downloaded release artifact as structurally damaged.
-          codesign --force --deep --sign - "$APP_PATH"
+          if [ "$SIGNING_ENABLED" = "true" ]; then
+            codesign --force --deep --options runtime --timestamp --sign "$APP_IDENTITY" --keychain "$KEYCHAIN_PATH" "$APP_PATH"
+          else
+            codesign --force --deep --sign - "$APP_PATH"
+          fi
+
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          if [ "$NOTARIZATION_ENABLED" = "true" ]; then
+            NOTARY_ZIP="$RUNNER_TEMP/CryptoTicker-notary.zip"
+            ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$NOTARY_ZIP"
+            xcrun notarytool submit "$NOTARY_ZIP" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            xcrun stapler staple "$APP_PATH"
+          fi
 
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" CryptoTicker.zip
 
       - name: Build installer package
         shell: bash
+        env:
+          SIGNING_ENABLED: ${{ steps.signing.outputs.signing_enabled }}
+          NOTARIZATION_ENABLED: ${{ steps.signing.outputs.notarization_enabled }}
+          INSTALLER_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_INSTALLER_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           APP_PATH="build/Release/CryptoTicker.app"
           PKG_ROOT="$PWD/build/pkgroot"
           COMPONENT_PLIST="$PWD/build/components.plist"
+          UNSIGNED_PKG_PATH="$PWD/build/CryptoTicker-unsigned.pkg"
           PKG_PATH="CryptoTicker.pkg"
           PACKAGE_VERSION="${{ steps.release.outputs.tag }}"
           PACKAGE_VERSION="${PACKAGE_VERSION#v}"
 
-          rm -rf "$PKG_ROOT" "$COMPONENT_PLIST"
+          rm -rf "$PKG_ROOT" "$COMPONENT_PLIST" "$UNSIGNED_PKG_PATH" "$PKG_PATH"
           mkdir -p "$PKG_ROOT/Applications"
           ditto "$APP_PATH" "$PKG_ROOT/Applications/CryptoTicker.app"
 
@@ -95,7 +184,22 @@ jobs:
             --scripts "$PWD/.github/packaging/pkg-scripts" \
             --install-location "/" \
             --ownership recommended \
-            "$PKG_PATH"
+            "$UNSIGNED_PKG_PATH"
+
+          if [ "$SIGNING_ENABLED" = "true" ]; then
+            productsign --sign "$INSTALLER_IDENTITY" --keychain "$KEYCHAIN_PATH" "$UNSIGNED_PKG_PATH" "$PKG_PATH"
+          else
+            mv "$UNSIGNED_PKG_PATH" "$PKG_PATH"
+          fi
+
+          if [ "$NOTARIZATION_ENABLED" = "true" ]; then
+            xcrun notarytool submit "$PKG_PATH" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            xcrun stapler staple "$PKG_PATH"
+          fi
 
       - name: Upload release assets
         env:

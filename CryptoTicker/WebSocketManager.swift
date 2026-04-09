@@ -66,7 +66,10 @@ class WebSocketManager: ObservableObject {
 
     private var webSocketTasks: [String: URLSessionWebSocketTask] = [:]
     private var reconnectTasks: [String: Task<Void, Never>] = [:]
-    private var lastSnapshotUpdatedAt: [String: Date] = [:]
+    private var okxWebSocketTask: URLSessionWebSocketTask?
+    private var okxReconnectTask: Task<Void, Never>?
+    private var okxSubscribedSymbols: Set<String> = []
+    private var lastMarketDataUpdatedAt: [String: Date] = [:]
     private var providerRecoveryTask: Task<Void, Never>?
     private var binanceConsecutiveFailures = 0
     private let urlSession = URLSession(configuration: .default)
@@ -75,6 +78,7 @@ class WebSocketManager: ObservableObject {
     let availableCurrencies = CryptoCurrency.availableCurrencies
 
     nonisolated private static let currenciesBySymbol = Dictionary(uniqueKeysWithValues: CryptoCurrency.availableCurrencies.map { ($0.symbol, $0) })
+    nonisolated private static let symbolsByOKXInstrumentID = Dictionary(uniqueKeysWithValues: CryptoCurrency.availableCurrencies.map { ($0.okxInstrumentID, $0.symbol) })
     private static let wholeNumberPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 0)
     private static let twoDecimalPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 2)
     private static let fourDecimalPriceFormatter = makeDecimalFormatter(maximumFractionDigits: 4)
@@ -118,7 +122,7 @@ class WebSocketManager: ObservableObject {
 
     func fetchAllCryptoPrices() async {
         logger.info("Fetching prices for all \(self.availableCurrencies.count) cryptocurrencies from \(self.activeProvider.displayName, privacy: .public)")
-        await fetchPrices(for: availableCurrencies.map(\.symbol), provider: activeProvider, updateSelectedSymbolsPrices: true)
+        await fetchPrices(for: availableCurrencies.map(\.symbol), provider: activeProvider)
         logger.info("Completed fetching all cryptocurrency prices")
     }
 
@@ -131,7 +135,7 @@ class WebSocketManager: ObservableObject {
                 return symbol
             }
 
-            guard let lastUpdatedAt = lastSnapshotUpdatedAt[symbol] else {
+            guard let lastUpdatedAt = lastMarketDataUpdatedAt[symbol] else {
                 return symbol
             }
 
@@ -142,7 +146,7 @@ class WebSocketManager: ObservableObject {
         guard !symbolsToRefresh.isEmpty else { return }
 
         logger.info("Refreshing \(symbolsToRefresh.count) stale menu snapshots from \(self.activeProvider.displayName, privacy: .public)")
-        await fetchPrices(for: symbolsToRefresh, provider: activeProvider, updateSelectedSymbolsPrices: false)
+        await fetchPrices(for: symbolsToRefresh, provider: activeProvider)
     }
 
     nonisolated private static func fetchPriceSnapshot(for symbol: String, provider: MarketDataProvider) async throws -> PriceSnapshot {
@@ -205,6 +209,17 @@ class WebSocketManager: ObservableObject {
     }
 
     func connectWebSockets() {
+        switch activeProvider {
+        case .binance:
+            disconnectOKXWebSocket(resetConnectionStates: false)
+            syncBinanceWebSockets()
+        case .okx:
+            disconnectAllBinanceWebSockets()
+            syncOKXWebSocket()
+        }
+    }
+
+    private func syncBinanceWebSockets() {
         let symbolsToDisconnect = Set(webSocketTasks.keys).subtracting(Set(selectedSymbols))
         for symbol in symbolsToDisconnect {
             disconnectWebSocket(for: symbol)
@@ -215,6 +230,21 @@ class WebSocketManager: ObservableObject {
         }
     }
 
+    private func syncOKXWebSocket() {
+        let desiredSymbols = Set(selectedSymbols)
+
+        guard !desiredSymbols.isEmpty else {
+            disconnectOKXWebSocket(resetConnectionStates: true)
+            return
+        }
+
+        guard okxWebSocketTask == nil || okxSubscribedSymbols != desiredSymbols else {
+            return
+        }
+
+        connectOKXWebSocket(for: desiredSymbols)
+    }
+
     private func connectWebSocket(for symbol: String) {
         cancelReconnect(for: symbol)
 
@@ -222,9 +252,7 @@ class WebSocketManager: ObservableObject {
             existingTask.cancel(with: .goingAway, reason: nil)
         }
 
-        let provider = activeProvider
-
-        guard let url = webSocketURL(for: symbol, provider: provider) else {
+        guard let url = webSocketURL(for: symbol, provider: .binance) else {
             logger.error("Invalid WebSocket URL for symbol: \(symbol)")
             updateConnectionState(for: symbol, state: .error(.invalidURL))
             return
@@ -236,56 +264,75 @@ class WebSocketManager: ObservableObject {
         webSocketTasks[symbol] = task
 
         task.resume()
-        subscribeIfNeeded(task, for: symbol, provider: provider)
-        receiveMessage(for: symbol, provider: provider)
+        receiveMessage(for: symbol)
     }
 
-    private func receiveMessage(for symbol: String, provider: MarketDataProvider) {
+    private func connectOKXWebSocket(for symbols: Set<String>) {
+        cancelOKXReconnect()
+
+        if let existingTask = okxWebSocketTask {
+            existingTask.cancel(with: .goingAway, reason: nil)
+        }
+
+        okxSubscribedSymbols = symbols
+
+        guard let url = webSocketURL(for: nil, provider: .okx) else {
+            logger.error("Invalid OKX WebSocket URL")
+            for symbol in symbols {
+                updateConnectionState(for: symbol, state: .error(.invalidURL))
+            }
+            return
+        }
+
+        for symbol in symbols {
+            updateConnectionState(for: symbol, state: .connecting)
+        }
+
+        let task = urlSession.webSocketTask(with: url)
+        okxWebSocketTask = task
+        task.resume()
+        subscribeToOKXTickers(task, symbols: symbols)
+        receiveOKXMessages(task)
+    }
+
+    private func receiveMessage(for symbol: String) {
         guard let task = webSocketTasks[symbol] else { return }
 
         task.receive { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                guard self.activeProvider == provider else { return }
+                guard self.activeProvider == .binance else { return }
                 guard self.selectedSymbols.contains(symbol) else { return }
+                guard self.webSocketTasks[symbol] === task else { return }
 
                 switch result {
                 case .success(let message):
                     switch message {
                     case .string(let text):
-                        self.handleIncomingData(text, for: symbol, provider: provider)
+                        self.handleBinanceMessage(text, for: symbol)
                     case .data(let data):
                         guard let text = String(data: data, encoding: .utf8) else {
                             self.logger.error("Unsupported binary WebSocket message for \(symbol)")
-                            self.receiveMessage(for: symbol, provider: provider)
+                            self.receiveMessage(for: symbol)
                             return
                         }
-                        self.handleIncomingData(text, for: symbol, provider: provider)
+                        self.handleBinanceMessage(text, for: symbol)
                     @unknown default:
                         self.logger.error("Unsupported WebSocket message received for \(symbol)")
                     }
 
                     if self.webSocketTasks[symbol] != nil {
-                        self.receiveMessage(for: symbol, provider: provider)
+                        self.receiveMessage(for: symbol)
                     }
 
                 case .failure(let error):
-                    self.logger.error("WebSocket error for \(symbol) on \(provider.displayName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    self.logger.error("WebSocket error for \(symbol) on Binance: \(error.localizedDescription, privacy: .public)")
                     self.webSocketTasks.removeValue(forKey: symbol)
                     self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
-                    self.recordProviderFailure(provider, context: "WebSocket receive", error: error)
-                    self.scheduleReconnect(for: symbol, provider: provider)
+                    self.recordProviderFailure(.binance, context: "WebSocket receive", error: error)
+                    self.scheduleReconnect(for: symbol, provider: .binance)
                 }
             }
-        }
-    }
-
-    private func handleIncomingData(_ text: String, for symbol: String, provider: MarketDataProvider) {
-        switch provider {
-        case .binance:
-            handleBinanceMessage(text, for: symbol)
-        case .okx:
-            handleOKXMessage(text, for: symbol)
         }
     }
 
@@ -306,17 +353,61 @@ class WebSocketManager: ObservableObject {
         updatePrice(priceStr, for: symbol)
     }
 
-    private func handleOKXMessage(_ text: String, for symbol: String) {
+    private func receiveOKXMessages(_ task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                guard self.activeProvider == .okx else { return }
+                guard self.okxWebSocketTask === task else { return }
+
+                switch result {
+                case .success(let message):
+                    switch message {
+                    case .string(let text):
+                        self.handleOKXMessage(text)
+                    case .data(let data):
+                        guard let text = String(data: data, encoding: .utf8) else {
+                            self.logger.error("Unsupported binary OKX WebSocket message")
+                            self.receiveOKXMessages(task)
+                            return
+                        }
+                        self.handleOKXMessage(text)
+                    @unknown default:
+                        self.logger.error("Unsupported OKX WebSocket message received")
+                    }
+
+                    if self.okxWebSocketTask === task {
+                        self.receiveOKXMessages(task)
+                    }
+
+                case .failure(let error):
+                    self.logger.error("OKX WebSocket error: \(error.localizedDescription, privacy: .public)")
+                    self.okxWebSocketTask = nil
+                    for symbol in self.okxSubscribedSymbols {
+                        self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
+                    }
+                    self.recordProviderFailure(.okx, context: "WebSocket receive", error: error)
+                    self.scheduleReconnect(provider: .okx)
+                }
+            }
+        }
+    }
+
+    private func handleOKXMessage(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            logger.error("Failed to parse OKX WebSocket data for \(symbol)")
+            logger.error("Failed to parse OKX WebSocket data")
             return
         }
 
         if let event = json["event"] as? String {
             if event == "subscribe" {
                 recordProviderSuccess(.okx)
-                if case .connecting = connectionStates[symbol] {
+
+                if let arg = json["arg"] as? [String: Any],
+                   let instId = arg["instId"] as? String,
+                   let symbol = Self.symbolsByOKXInstrumentID[instId],
+                   case .connecting = connectionStates[symbol] {
                     updateConnectionState(for: symbol, state: .connected)
                 }
                 return
@@ -325,28 +416,37 @@ class WebSocketManager: ObservableObject {
             if event == "error" {
                 let statusCode = Int(json["code"] as? String ?? "") ?? -1
                 let error = WebSocketError.invalidResponse(statusCode)
-                logger.error("OKX WebSocket subscription error for \(symbol): \(String(describing: json), privacy: .public)")
-                webSocketTasks.removeValue(forKey: symbol)
-                updateConnectionState(for: symbol, state: .error(error))
+                logger.error("OKX WebSocket subscription error: \(String(describing: json), privacy: .public)")
+                okxWebSocketTask = nil
+                let affectedSymbols = okxSymbols(from: json).isEmpty ? okxSubscribedSymbols : okxSymbols(from: json)
+                for symbol in affectedSymbols {
+                    updateConnectionState(for: symbol, state: .error(error))
+                }
                 recordProviderFailure(.okx, context: "WebSocket subscribe", error: error)
-                scheduleReconnect(for: symbol, provider: .okx)
+                scheduleReconnect(provider: .okx)
             }
             return
         }
 
-        guard let dataArray = json["data"] as? [[String: Any]],
-              let ticker = dataArray.first,
-              let priceStr = ticker["last"] as? String else {
+        guard let dataArray = json["data"] as? [[String: Any]], !dataArray.isEmpty else {
             return
         }
 
         recordProviderSuccess(.okx)
 
-        if case .connecting = connectionStates[symbol] {
-            updateConnectionState(for: symbol, state: .connected)
-        }
+        for ticker in dataArray {
+            guard let instId = ticker["instId"] as? String,
+                  let symbol = Self.symbolsByOKXInstrumentID[instId],
+                  let priceStr = ticker["last"] as? String else {
+                continue
+            }
 
-        updatePrice(priceStr, for: symbol)
+            if case .connecting = connectionStates[symbol] {
+                updateConnectionState(for: symbol, state: .connected)
+            }
+
+            updatePrice(priceStr, for: symbol)
+        }
     }
 
     private func updatePrice(_ rawPrice: String, for symbol: String) {
@@ -354,6 +454,7 @@ class WebSocketManager: ObservableObject {
 
         let formattedPrice = formatPrice(rawPrice)
         let previousPrice = prices[symbol]
+        lastMarketDataUpdatedAt[symbol] = Date()
         prices[symbol] = formattedPrice
 
         guard previousPrice != formattedPrice else { return }
@@ -381,6 +482,11 @@ class WebSocketManager: ObservableObject {
         logger.info("Disconnecting all WebSockets")
         providerRecoveryTask?.cancel()
         providerRecoveryTask = nil
+        disconnectAllBinanceWebSockets()
+        disconnectOKXWebSocket(resetConnectionStates: true)
+    }
+
+    private func disconnectAllBinanceWebSockets() {
         let symbols = Array(Set(webSocketTasks.keys).union(reconnectTasks.keys))
         symbols.forEach { disconnectWebSocket(for: $0) }
     }
@@ -393,6 +499,24 @@ class WebSocketManager: ObservableObject {
         }
 
         updateConnectionState(for: symbol, state: .disconnected)
+    }
+
+    private func disconnectOKXWebSocket(resetConnectionStates: Bool) {
+        cancelOKXReconnect()
+
+        if let task = okxWebSocketTask {
+            task.cancel(with: .goingAway, reason: nil)
+            okxWebSocketTask = nil
+        }
+
+        let symbols = okxSubscribedSymbols
+        okxSubscribedSymbols.removeAll()
+
+        guard resetConnectionStates else { return }
+
+        for symbol in symbols {
+            updateConnectionState(for: symbol, state: .disconnected)
+        }
     }
 
     func toggleCryptoSelection(_ symbol: String) {
@@ -441,27 +565,56 @@ class WebSocketManager: ObservableObject {
         return false
     }
 
-    private func scheduleReconnect(for symbol: String, provider: MarketDataProvider) {
-        cancelReconnect(for: symbol)
+    private func scheduleReconnect(for symbol: String? = nil, provider: MarketDataProvider) {
+        switch provider {
+        case .binance:
+            guard let symbol else { return }
+            cancelReconnect(for: symbol)
 
-        guard selectedSymbols.contains(symbol) else { return }
+            guard selectedSymbols.contains(symbol) else { return }
 
-        reconnectTasks[symbol] = Task { [weak self] in
-            let delay = UInt64(AppConfiguration.WebSocket.reconnectDelay * 1_000_000_000)
-            try? await Task.sleep(nanoseconds: delay)
+            reconnectTasks[symbol] = Task { [weak self] in
+                let delay = UInt64(AppConfiguration.WebSocket.reconnectDelay * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: delay)
 
-            guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else { return }
 
-            await MainActor.run {
-                guard let self = self else { return }
+                await MainActor.run {
+                    guard let self = self else { return }
 
-                self.reconnectTasks.removeValue(forKey: symbol)
+                    self.reconnectTasks.removeValue(forKey: symbol)
 
-                guard self.activeProvider == provider else { return }
-                guard self.selectedSymbols.contains(symbol) else { return }
-                self.connectWebSocket(for: symbol)
+                    guard self.activeProvider == provider else { return }
+                    guard self.selectedSymbols.contains(symbol) else { return }
+                    self.connectWebSocket(for: symbol)
+                }
+            }
+        case .okx:
+            cancelOKXReconnect()
+
+            guard !selectedSymbols.isEmpty else { return }
+
+            okxReconnectTask = Task { [weak self] in
+                let delay = UInt64(AppConfiguration.WebSocket.reconnectDelay * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: delay)
+
+                guard !Task.isCancelled else { return }
+
+                await MainActor.run {
+                    guard let self = self else { return }
+
+                    self.okxReconnectTask = nil
+
+                    guard self.activeProvider == .okx else { return }
+                    self.syncOKXWebSocket()
+                }
             }
         }
+    }
+
+    private func cancelOKXReconnect() {
+        okxReconnectTask?.cancel()
+        okxReconnectTask = nil
     }
 
     private func cancelReconnect(for symbol: String) {
@@ -469,7 +622,7 @@ class WebSocketManager: ObservableObject {
         reconnectTasks.removeValue(forKey: symbol)
     }
 
-    private func fetchPrices(for symbols: [String], provider: MarketDataProvider, updateSelectedSymbolsPrices: Bool) async {
+    private func fetchPrices(for symbols: [String], provider: MarketDataProvider) async {
         guard !symbols.isEmpty else { return }
 
         var snapshots: [PriceSnapshot] = []
@@ -508,15 +661,13 @@ class WebSocketManager: ObservableObject {
         let now = Date()
 
         for snapshot in snapshots {
-            lastSnapshotUpdatedAt[snapshot.symbol] = now
+            lastMarketDataUpdatedAt[snapshot.symbol] = now
 
             let formattedPrice = formatPrice(snapshot.price)
             let formattedChange = formatPercent(snapshot.change) + "%"
             var didChangeSymbol = false
 
-            let shouldUpdateDisplayedPrice = updateSelectedSymbolsPrices || !selectedSymbols.contains(snapshot.symbol) || prices[snapshot.symbol] == nil
-
-            if shouldUpdateDisplayedPrice, prices[snapshot.symbol] != formattedPrice {
+            if prices[snapshot.symbol] != formattedPrice {
                 prices[snapshot.symbol] = formattedPrice
                 didChangeSymbol = true
             }
@@ -563,16 +714,8 @@ class WebSocketManager: ObservableObject {
 
         logger.notice("Switching provider from \(self.activeProvider.displayName, privacy: .public) to \(provider.displayName, privacy: .public): \(reason, privacy: .public)")
 
-        let symbols = Array(Set(webSocketTasks.keys).union(reconnectTasks.keys).union(selectedSymbols))
-        symbols.forEach { symbol in
-            cancelReconnect(for: symbol)
-
-            if let task = webSocketTasks.removeValue(forKey: symbol) {
-                task.cancel(with: .goingAway, reason: nil)
-            }
-
-            updateConnectionState(for: symbol, state: .disconnected)
-        }
+        disconnectAllBinanceWebSockets()
+        disconnectOKXWebSocket(resetConnectionStates: true)
 
         activeProvider = provider
 
@@ -613,39 +756,64 @@ class WebSocketManager: ObservableObject {
         }
     }
 
-    private func webSocketURL(for symbol: String, provider: MarketDataProvider) -> URL? {
+    private func webSocketURL(for symbol: String?, provider: MarketDataProvider) -> URL? {
         switch provider {
         case .binance:
+            guard let symbol else { return nil }
             return URL(string: "\(AppConfiguration.API.binanceWebSocketURL)/\(symbol)@trade")
         case .okx:
             return URL(string: AppConfiguration.API.okxWebSocketURL)
         }
     }
 
-    private func subscribeIfNeeded(_ task: URLSessionWebSocketTask, for symbol: String, provider: MarketDataProvider) {
-        guard provider == .okx,
-              let currency = Self.currenciesBySymbol[symbol] else {
+    private func subscribeToOKXTickers(_ task: URLSessionWebSocketTask, symbols: Set<String>) {
+        let instruments = symbols.compactMap { symbol -> String? in
+            Self.currenciesBySymbol[symbol]?.okxInstrumentID
+        }
+
+        guard !instruments.isEmpty else {
             return
         }
 
-        let message = """
-        {"op":"subscribe","args":[{"channel":"tickers","instId":"\(currency.okxInstrumentID)"}]}
-        """
+        let args = instruments.map { #"{"channel":"tickers","instId":"\#($0)"}"# }.joined(separator: ",")
+        let message = #"{"op":"subscribe","args":[\#(args)]}"#
 
         task.send(.string(message)) { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                guard self.activeProvider == provider else { return }
+                guard self.activeProvider == .okx else { return }
+                guard self.okxWebSocketTask === task else { return }
 
                 if let error {
-                    self.logger.error("Failed to subscribe to OKX ticker for \(symbol): \(error.localizedDescription, privacy: .public)")
-                    self.webSocketTasks.removeValue(forKey: symbol)
-                    self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
-                    self.recordProviderFailure(provider, context: "WebSocket subscribe", error: error)
-                    self.scheduleReconnect(for: symbol, provider: provider)
+                    self.logger.error("Failed to subscribe to OKX tickers: \(error.localizedDescription, privacy: .public)")
+                    self.okxWebSocketTask = nil
+                    for symbol in symbols {
+                        self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
+                    }
+                    self.recordProviderFailure(.okx, context: "WebSocket subscribe", error: error)
+                    self.scheduleReconnect(provider: .okx)
                 }
             }
         }
+    }
+
+    private func okxSymbols(from payload: [String: Any]) -> Set<String> {
+        if let arg = payload["arg"] as? [String: Any],
+           let instId = arg["instId"] as? String,
+           let symbol = Self.symbolsByOKXInstrumentID[instId] {
+            return [symbol]
+        }
+
+        if let dataArray = payload["data"] as? [[String: Any]] {
+            return Set(
+                dataArray.compactMap { ticker in
+                    guard let instId = ticker["instId"] as? String else { return nil }
+                    return Self.symbolsByOKXInstrumentID[instId]
+                }
+            )
+        }
+
+        return []
     }
 
     nonisolated private static func makeDecimalFormatter(maximumFractionDigits: Int) -> NumberFormatter {
