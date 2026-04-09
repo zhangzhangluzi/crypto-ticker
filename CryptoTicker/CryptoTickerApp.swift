@@ -5,25 +5,26 @@
 //  Created by Luke Mao on 5/2/2025.
 //
 
-import SwiftUI
+import AppKit
 import os.log
 
 @main
-struct CryptoTickerApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "CryptoTickerApp")
+@MainActor
+enum CryptoTickerApp {
+    private static let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "CryptoTickerApp")
+    private static var appDelegate: AppDelegate?
 
-    init() {
+    static func main() {
         guard AppConfiguration.validate() else {
-            logger.error("Configuration validation failed")
-            fatalError("Invalid app configuration")
+            logger.fault("Configuration validation failed")
+            return
         }
 
-        logger.info("CryptoTicker app initialized successfully")
-    }
-
-    var body: some Scene {
-        Settings {
-        }
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        appDelegate = delegate
+        application.setActivationPolicy(.accessory)
+        application.delegate = delegate
+        application.run()
     }
 }
