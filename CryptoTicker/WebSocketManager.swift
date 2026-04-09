@@ -56,6 +56,11 @@ private struct PriceSnapshot {
     let change: String
 }
 
+private struct SnapshotFetchFailure: Error {
+    let symbol: String
+    let underlyingError: Error
+}
+
 @MainActor
 class WebSocketManager: ObservableObject {
     @Published var prices: [String: String] = [:]
@@ -179,6 +184,38 @@ class WebSocketManager: ObservableObject {
         }
 
         return PriceSnapshot(symbol: symbol, price: priceStr, change: changeStr)
+    }
+
+    nonisolated private static func probeBinanceRealtimeFeed(for symbol: String) async throws {
+        guard let url = URL(string: "\(AppConfiguration.API.binanceWebSocketURL)/\(symbol)@trade") else {
+            throw WebSocketError.invalidURL
+        }
+
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.webSocketTask(with: url)
+        task.resume()
+
+        defer {
+            task.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+
+        let timeoutInNanoseconds = UInt64(AppConfiguration.ProviderFallback.binanceRecoveryWebSocketTimeout * 1_000_000_000)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let message = try await task.receive()
+                try validateBinanceTradeMessage(message)
+            }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutInNanoseconds)
+                throw WebSocketError.networkError(URLError(.timedOut))
+            }
+
+            _ = try await group.next()
+            group.cancelAll()
+        }
     }
 
     nonisolated private static func fetchOKXPriceSnapshot(for symbol: String) async throws -> PriceSnapshot {
@@ -650,14 +687,15 @@ class WebSocketManager: ObservableObject {
         guard !symbols.isEmpty else { return }
 
         var snapshots: [PriceSnapshot] = []
+        var failures: [SnapshotFetchFailure] = []
 
-        await withTaskGroup(of: Result<PriceSnapshot, Error>.self) { group in
+        await withTaskGroup(of: Result<PriceSnapshot, SnapshotFetchFailure>.self) { group in
             for symbol in symbols {
                 group.addTask {
                     do {
                         return .success(try await Self.fetchPriceSnapshot(for: symbol, provider: provider))
                     } catch {
-                        return .failure(error)
+                        return .failure(SnapshotFetchFailure(symbol: symbol, underlyingError: error))
                     }
                 }
             }
@@ -666,20 +704,29 @@ class WebSocketManager: ObservableObject {
                 switch result {
                 case .success(let snapshot):
                     snapshots.append(snapshot)
-                case .failure(let error):
-                    logger.error("Failed to fetch a cryptocurrency price from \(provider.displayName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                case .failure(let failure):
+                    failures.append(failure)
+                    logger.error("Failed to fetch \(failure.symbol, privacy: .public) from \(provider.displayName, privacy: .public): \(failure.underlyingError.localizedDescription, privacy: .public)")
                 }
             }
         }
 
         guard activeProvider == provider else { return }
 
-        if snapshots.isEmpty {
-            recordProviderFailure(provider, context: "Snapshot refresh", error: WebSocketError.dataParsingFailed)
-            return
+        if let firstFailure = failures.first {
+            let context = failures.count == symbols.count
+                ? "Snapshot refresh"
+                : "Snapshot refresh partial (\(failures.count)/\(symbols.count) failed)"
+            recordProviderFailure(provider, context: context, error: firstFailure.underlyingError)
+
+            guard activeProvider == provider else { return }
         }
 
-        recordProviderSuccess(provider)
+        guard !snapshots.isEmpty else { return }
+
+        if failures.isEmpty {
+            recordProviderSuccess(provider)
+        }
 
         var changedSymbols: [String] = []
         let now = Date()
@@ -801,7 +848,8 @@ class WebSocketManager: ObservableObject {
         let probeSymbol = selectedSymbols.first ?? AppConfiguration.Defaults.selectedCryptos.first ?? "btcusdt"
 
         do {
-            _ = try await Self.fetchPriceSnapshot(for: probeSymbol, provider: .binance)
+            _ = try await Self.fetchBinancePriceSnapshot(for: probeSymbol)
+            try await Self.probeBinanceRealtimeFeed(for: probeSymbol)
             binanceConsecutiveFailures = 0
             switchProvider(to: .binance, reason: "Hourly recovery check succeeded")
         } catch {
@@ -901,5 +949,26 @@ class WebSocketManager: ObservableObject {
         formatter.usesGroupingSeparator = true
         formatter.maximumFractionDigits = maximumFractionDigits
         return formatter
+    }
+
+    nonisolated private static func validateBinanceTradeMessage(_ message: URLSessionWebSocketTask.Message) throws {
+        let data: Data
+
+        switch message {
+        case .string(let text):
+            guard let textData = text.data(using: .utf8) else {
+                throw WebSocketError.dataParsingFailed
+            }
+            data = textData
+        case .data(let payload):
+            data = payload
+        @unknown default:
+            throw WebSocketError.dataParsingFailed
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["p"] as? String != nil else {
+            throw WebSocketError.dataParsingFailed
+        }
     }
 }

@@ -29,6 +29,8 @@ final class AppLaunchResolver {
         }
 
         do {
+            terminateRunningInstalledCopies(at: installedBundleURL)
+
             let launcher = Process()
             launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
             launcher.arguments = [installedBundleURL.path]
@@ -109,6 +111,41 @@ final class AppLaunchResolver {
         let marketingVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         let buildVersion = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
         return BundleVersion(marketingVersion: marketingVersion, buildVersion: buildVersion)
+    }
+
+    private func terminateRunningInstalledCopies(at installedBundleURL: URL) {
+        let currentProcessID = ProcessInfo.processInfo.processIdentifier
+        let canonicalInstalledBundleURL = standardized(installedBundleURL)
+        let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: AppConfiguration.bundleIdentifier)
+            .filter { runningApp in
+                guard runningApp.processIdentifier != currentProcessID,
+                      let runningBundleURL = runningApp.bundleURL else {
+                    return false
+                }
+
+                return standardized(runningBundleURL) == canonicalInstalledBundleURL
+            }
+
+        guard !runningApps.isEmpty else { return }
+
+        for runningApp in runningApps {
+            logger.info("Terminating running installed app copy with pid \(runningApp.processIdentifier)")
+            _ = runningApp.terminate()
+        }
+
+        let deadline = Date().addingTimeInterval(1.0)
+        while Date() < deadline {
+            if runningApps.allSatisfy(\.isTerminated) {
+                return
+            }
+
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+
+        for runningApp in runningApps where !runningApp.isTerminated {
+            logger.notice("Force terminating running installed app copy with pid \(runningApp.processIdentifier)")
+            _ = runningApp.forceTerminate()
+        }
     }
 
     private func standardized(_ url: URL) -> URL {

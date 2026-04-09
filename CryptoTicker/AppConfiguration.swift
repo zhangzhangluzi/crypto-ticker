@@ -37,6 +37,7 @@ struct AppConfiguration {
         static let binanceFailureThreshold = 3
         static let okxFailureThreshold = 3
         static let binanceRecoveryCheckInterval: TimeInterval = 3600.0
+        static let binanceRecoveryWebSocketTimeout: TimeInterval = 5.0
     }
 
     struct UserDefaultsKeys {
