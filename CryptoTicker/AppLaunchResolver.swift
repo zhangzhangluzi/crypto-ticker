@@ -149,6 +149,19 @@ final class AppLaunchResolver {
     }
 
     private func standardized(_ url: URL) -> URL {
-        url.resolvingSymlinksInPath().standardizedFileURL
+        let normalizedURL = url.resolvingSymlinksInPath().standardizedFileURL
+        let normalizedPath = normalizedFirmlinkPath(normalizedURL.path)
+        return URL(fileURLWithPath: normalizedPath, isDirectory: normalizedURL.hasDirectoryPath).standardizedFileURL
+    }
+
+    private func normalizedFirmlinkPath(_ path: String) -> String {
+        let dataVolumePrefix = "/System/Volumes/Data"
+
+        guard path == dataVolumePrefix || path.hasPrefix("\(dataVolumePrefix)/") else {
+            return path
+        }
+
+        let suffix = String(path.dropFirst(dataVolumePrefix.count))
+        return suffix.isEmpty ? "/" : suffix
     }
 }
