@@ -24,7 +24,6 @@ struct CryptoTickerApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
         }
     }
 }
