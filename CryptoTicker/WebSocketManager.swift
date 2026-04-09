@@ -69,7 +69,7 @@ class WebSocketManager: ObservableObject {
     private var okxWebSocketTask: URLSessionWebSocketTask?
     private var okxReconnectTask: Task<Void, Never>?
     private var okxSubscribedSymbols: Set<String> = []
-    private var lastMarketDataUpdatedAt: [String: Date] = [:]
+    private var lastSnapshotUpdatedAt: [String: Date] = [:]
     private var providerRecoveryTask: Task<Void, Never>?
     private var binanceConsecutiveFailures = 0
     private var okxConsecutiveFailures = 0
@@ -137,7 +137,7 @@ class WebSocketManager: ObservableObject {
                 return symbol
             }
 
-            guard let lastUpdatedAt = lastMarketDataUpdatedAt[symbol] else {
+            guard let lastUpdatedAt = lastSnapshotUpdatedAt[symbol] else {
                 return symbol
             }
 
@@ -234,23 +234,40 @@ class WebSocketManager: ObservableObject {
 
     private func syncOKXWebSocket() {
         let desiredSymbols = Set(selectedSymbols)
-        let previousSymbols = okxSubscribedSymbols
 
         guard !desiredSymbols.isEmpty else {
             disconnectOKXWebSocket(resetConnectionStates: true)
             return
         }
 
-        guard okxWebSocketTask == nil || okxSubscribedSymbols != desiredSymbols else {
+        guard let task = okxWebSocketTask else {
+            connectOKXWebSocket(for: desiredSymbols)
             return
         }
 
-        let removedSymbols = previousSymbols.subtracting(desiredSymbols)
+        let removedSymbols = okxSubscribedSymbols.subtracting(desiredSymbols)
+        let addedSymbols = desiredSymbols.subtracting(okxSubscribedSymbols)
+
+        guard !removedSymbols.isEmpty || !addedSymbols.isEmpty else {
+            return
+        }
+
         for symbol in removedSymbols {
             updateConnectionState(for: symbol, state: .disconnected)
         }
 
-        connectOKXWebSocket(for: desiredSymbols)
+        if !removedSymbols.isEmpty {
+            okxSubscribedSymbols.subtract(removedSymbols)
+            unsubscribeFromOKXTickers(task, symbols: removedSymbols)
+        }
+
+        if !addedSymbols.isEmpty {
+            okxSubscribedSymbols.formUnion(addedSymbols)
+            for symbol in addedSymbols {
+                updateConnectionState(for: symbol, state: .connecting)
+            }
+            subscribeToOKXTickers(task, symbols: addedSymbols)
+        }
     }
 
     private func connectWebSocket(for symbol: String) {
@@ -462,7 +479,6 @@ class WebSocketManager: ObservableObject {
 
         let formattedPrice = formatPrice(rawPrice)
         let previousPrice = prices[symbol]
-        lastMarketDataUpdatedAt[symbol] = Date()
         prices[symbol] = formattedPrice
 
         guard previousPrice != formattedPrice else { return }
@@ -669,7 +685,7 @@ class WebSocketManager: ObservableObject {
         let now = Date()
 
         for snapshot in snapshots {
-            lastMarketDataUpdatedAt[snapshot.symbol] = now
+            lastSnapshotUpdatedAt[snapshot.symbol] = now
 
             let formattedPrice = formatPrice(snapshot.price)
             let formattedChange = formatPercent(snapshot.change) + "%"
@@ -817,6 +833,14 @@ class WebSocketManager: ObservableObject {
     }
 
     private func subscribeToOKXTickers(_ task: URLSessionWebSocketTask, symbols: Set<String>) {
+        sendOKXSubscriptionMessage(task, operation: "subscribe", symbols: symbols)
+    }
+
+    private func unsubscribeFromOKXTickers(_ task: URLSessionWebSocketTask, symbols: Set<String>) {
+        sendOKXSubscriptionMessage(task, operation: "unsubscribe", symbols: symbols)
+    }
+
+    private func sendOKXSubscriptionMessage(_ task: URLSessionWebSocketTask, operation: String, symbols: Set<String>) {
         let instruments = symbols.compactMap { symbol -> String? in
             Self.currenciesBySymbol[symbol]?.okxInstrumentID
         }
@@ -826,7 +850,7 @@ class WebSocketManager: ObservableObject {
         }
 
         let args = instruments.map { #"{"channel":"tickers","instId":"\#($0)"}"# }.joined(separator: ",")
-        let message = #"{"op":"subscribe","args":[\#(args)]}"#
+        let message = #"{"op":"\#(operation)","args":[\#(args)]}"#
 
         task.send(.string(message)) { [weak self] error in
             Task { @MainActor [weak self] in
@@ -835,12 +859,16 @@ class WebSocketManager: ObservableObject {
                 guard self.okxWebSocketTask === task else { return }
 
                 if let error {
-                    self.logger.error("Failed to subscribe to OKX tickers: \(error.localizedDescription, privacy: .public)")
+                    self.logger.error("Failed to \(operation, privacy: .public) OKX tickers: \(error.localizedDescription, privacy: .public)")
                     self.okxWebSocketTask = nil
-                    for symbol in symbols {
-                        self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
+
+                    if operation == "subscribe" {
+                        for symbol in symbols {
+                            self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
+                        }
                     }
-                    self.recordProviderFailure(.okx, context: "WebSocket subscribe", error: error)
+
+                    self.recordProviderFailure(.okx, context: "WebSocket \(operation)", error: error)
                     self.scheduleReconnect(provider: .okx)
                 }
             }

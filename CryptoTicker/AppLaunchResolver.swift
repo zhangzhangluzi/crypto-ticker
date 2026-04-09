@@ -9,12 +9,12 @@ final class AppLaunchResolver {
         let buildVersion: String
 
         static func < (lhs: BundleVersion, rhs: BundleVersion) -> Bool {
-            let buildComparison = lhs.buildVersion.compare(rhs.buildVersion, options: .numeric)
-            if buildComparison != .orderedSame {
-                return buildComparison == .orderedAscending
+            let marketingComparison = lhs.marketingVersion.compare(rhs.marketingVersion, options: .numeric)
+            if marketingComparison != .orderedSame {
+                return marketingComparison == .orderedAscending
             }
 
-            return lhs.marketingVersion.compare(rhs.marketingVersion, options: .numeric) == .orderedAscending
+            return lhs.buildVersion.compare(rhs.buildVersion, options: .numeric) == .orderedAscending
         }
     }
 
