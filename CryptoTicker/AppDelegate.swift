@@ -18,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingMenuRefreshSymbols: Set<String> = []
     private var isMenuOpen = false
     private var shouldPresentMenuAfterLaunch = true
+    private let appLaunchResolver = AppLaunchResolver()
     private lazy var webSocketManager = WebSocketManager()
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppDelegate")
 
@@ -39,19 +40,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     ]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        LaunchTrace.write("applicationDidFinishLaunching entered")
         logger.info("Application launching...")
 
+        guard appLaunchResolver.prepareForLaunch() else {
+            logger.info("Launch redirected to installed app copy")
+            return
+        }
+
         setupStatusBarItem()
-        LaunchTrace.write("status bar item set up")
         setupMenu()
-        LaunchTrace.write("menu set up")
         setupObservers()
-        LaunchTrace.write("observers set up")
         refreshDisplay(forceMenuRefresh: true, forceStatusBarRefresh: true)
-        LaunchTrace.write("display refreshed")
         presentStatusMenuIfNeeded()
-        LaunchTrace.write("presentStatusMenuIfNeeded completed")
         logger.info("Application launched successfully")
     }
     
