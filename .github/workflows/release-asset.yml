@@ -13,6 +13,11 @@ on:
         description: Release tag to build and upload
         required: true
         type: string
+      allow_unsigned_release:
+        description: Allow unsigned release artifacts for manual testing only
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -54,9 +59,12 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EVENT_NAME: ${{ github.event_name }}
+          ALLOW_UNSIGNED_RELEASE: ${{ github.event.inputs.allow_unsigned_release }}
         run: |
           SIGNING_ENABLED=false
           NOTARIZATION_ENABLED=false
+          ALLOW_UNSIGNED=false
 
           if [ -n "$APP_CERT_BASE64" ] && [ -n "$INSTALLER_CERT_BASE64" ] && [ -n "$CERT_PASSWORD" ] && [ -n "$APP_IDENTITY" ] && [ -n "$INSTALLER_IDENTITY" ]; then
             SIGNING_ENABLED=true
@@ -66,13 +74,21 @@ jobs:
             NOTARIZATION_ENABLED=true
           fi
 
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$ALLOW_UNSIGNED_RELEASE" = "true" ]; then
+            ALLOW_UNSIGNED=true
+          fi
+
           echo "signing_enabled=$SIGNING_ENABLED" >> "$GITHUB_OUTPUT"
           echo "notarization_enabled=$NOTARIZATION_ENABLED" >> "$GITHUB_OUTPUT"
+          echo "allow_unsigned=$ALLOW_UNSIGNED" >> "$GITHUB_OUTPUT"
 
-          if [ "$SIGNING_ENABLED" = false ]; then
-            echo "::warning::Developer ID signing secrets are not configured. Release artifacts will be unsigned."
-          elif [ "$NOTARIZATION_ENABLED" = false ]; then
-            echo "::warning::Notarization secrets are not configured. Release artifacts will be signed but not notarized."
+          if [ "$SIGNING_ENABLED" = false ] || [ "$NOTARIZATION_ENABLED" = false ]; then
+            if [ "$ALLOW_UNSIGNED" = "true" ]; then
+              echo "::warning::Publishing unsigned or non-notarized artifacts because allow_unsigned_release=true was set on a manual workflow dispatch."
+            else
+              echo "::error::Developer ID signing and notarization secrets must be configured before publishing release assets."
+              exit 1
+            fi
           fi
 
       - name: Import Developer ID certificates
@@ -125,15 +141,20 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           APP_PATH="build/Release/CryptoTicker.app"
+          ENTITLEMENTS_PATH="CryptoTicker/CryptoTicker.entitlements"
           if [ ! -d "$APP_PATH" ]; then
             echo "Expected app not found at $APP_PATH" >&2
             exit 1
           fi
+          if [ ! -f "$ENTITLEMENTS_PATH" ]; then
+            echo "Expected entitlements file not found at $ENTITLEMENTS_PATH" >&2
+            exit 1
+          fi
 
           if [ "$SIGNING_ENABLED" = "true" ]; then
-            codesign --force --deep --options runtime --timestamp --sign "$APP_IDENTITY" --keychain "$KEYCHAIN_PATH" "$APP_PATH"
+            codesign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$APP_IDENTITY" --keychain "$KEYCHAIN_PATH" "$APP_PATH"
           else
-            codesign --force --deep --sign - "$APP_PATH"
+            codesign --force --deep --entitlements "$ENTITLEMENTS_PATH" --sign - "$APP_PATH"
           fi
 
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"

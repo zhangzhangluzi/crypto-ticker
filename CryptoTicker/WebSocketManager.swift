@@ -232,6 +232,7 @@ class WebSocketManager: ObservableObject {
 
     private func syncOKXWebSocket() {
         let desiredSymbols = Set(selectedSymbols)
+        let previousSymbols = okxSubscribedSymbols
 
         guard !desiredSymbols.isEmpty else {
             disconnectOKXWebSocket(resetConnectionStates: true)
@@ -240,6 +241,11 @@ class WebSocketManager: ObservableObject {
 
         guard okxWebSocketTask == nil || okxSubscribedSymbols != desiredSymbols else {
             return
+        }
+
+        let removedSymbols = previousSymbols.subtracting(desiredSymbols)
+        for symbol in removedSymbols {
+            updateConnectionState(for: symbol, state: .disconnected)
         }
 
         connectOKXWebSocket(for: desiredSymbols)
