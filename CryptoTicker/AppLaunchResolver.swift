@@ -4,6 +4,20 @@ import os.log
 
 @MainActor
 final class AppLaunchResolver {
+    private struct BundleVersion: Comparable {
+        let marketingVersion: String
+        let buildVersion: String
+
+        static func < (lhs: BundleVersion, rhs: BundleVersion) -> Bool {
+            let buildComparison = lhs.buildVersion.compare(rhs.buildVersion, options: .numeric)
+            if buildComparison != .orderedSame {
+                return buildComparison == .orderedAscending
+            }
+
+            return lhs.marketingVersion.compare(rhs.marketingVersion, options: .numeric) == .orderedAscending
+        }
+    }
+
     private let fileManager = FileManager.default
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppLaunchResolver")
 
@@ -38,14 +52,16 @@ final class AppLaunchResolver {
         let canonicalBundleURL = standardized(systemInstallCandidateURL)
 
         if fileManager.fileExists(atPath: canonicalBundleURL.path),
-           canonicalBundleURL != currentBundleURL {
+           canonicalBundleURL != currentBundleURL,
+           shouldRedirectLaunch(from: currentBundleURL, to: canonicalBundleURL) {
             return canonicalBundleURL
         }
 
         let fallbackBundleURL = standardized(userInstallCandidateURL)
         if !isSystemInstallLocation(currentBundleURL),
            fileManager.fileExists(atPath: fallbackBundleURL.path),
-           fallbackBundleURL != currentBundleURL {
+           fallbackBundleURL != currentBundleURL,
+           shouldRedirectLaunch(from: currentBundleURL, to: fallbackBundleURL) {
             return fallbackBundleURL
         }
 
@@ -67,6 +83,32 @@ final class AppLaunchResolver {
                 .appendingPathComponent("Applications", isDirectory: true)
 
         return userApplicationsURL.appendingPathComponent("\(AppConfiguration.appName).app", isDirectory: true)
+    }
+
+    private func shouldRedirectLaunch(from currentBundleURL: URL, to installedBundleURL: URL) -> Bool {
+        let currentVersion = bundleVersion(for: currentBundleURL)
+        let installedVersion = bundleVersion(for: installedBundleURL)
+
+        switch (currentVersion, installedVersion) {
+        case let (.some(currentVersion), .some(installedVersion)):
+            return installedVersion >= currentVersion
+        case (.none, .some):
+            return true
+        case (.some, .none):
+            return false
+        case (.none, .none):
+            return true
+        }
+    }
+
+    private func bundleVersion(for bundleURL: URL) -> BundleVersion? {
+        guard let bundle = Bundle(url: bundleURL) else {
+            return nil
+        }
+
+        let marketingVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        let buildVersion = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        return BundleVersion(marketingVersion: marketingVersion, buildVersion: buildVersion)
     }
 
     private func standardized(_ url: URL) -> URL {

@@ -72,6 +72,8 @@ class WebSocketManager: ObservableObject {
     private var lastMarketDataUpdatedAt: [String: Date] = [:]
     private var providerRecoveryTask: Task<Void, Never>?
     private var binanceConsecutiveFailures = 0
+    private var okxConsecutiveFailures = 0
+    private var isOKXUnavailable = false
     private let urlSession = URLSession(configuration: .default)
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "WebSocketManager")
 
@@ -95,7 +97,7 @@ class WebSocketManager: ObservableObject {
         case .binance:
             return "Source: Binance"
         case .okx:
-            return "Source: OKX (fallback)"
+            return isOKXUnavailable ? "Source: OKX (fallback unavailable)" : "Source: OKX (fallback)"
         }
     }
 
@@ -697,22 +699,49 @@ class WebSocketManager: ObservableObject {
     }
 
     private func recordProviderSuccess(_ provider: MarketDataProvider) {
-        guard provider == .binance else { return }
-
-        if binanceConsecutiveFailures != 0 {
-            logger.info("Binance recovered after \(self.binanceConsecutiveFailures) consecutive failures")
+        switch provider {
+        case .binance:
+            if binanceConsecutiveFailures != 0 {
+                logger.info("Binance recovered after \(self.binanceConsecutiveFailures) consecutive failures")
+            }
+            binanceConsecutiveFailures = 0
+        case .okx:
+            if okxConsecutiveFailures != 0 {
+                logger.info("OKX recovered after \(self.okxConsecutiveFailures) consecutive failures")
+            }
+            okxConsecutiveFailures = 0
+            setOKXUnavailable(false)
         }
-        binanceConsecutiveFailures = 0
     }
 
     private func recordProviderFailure(_ provider: MarketDataProvider, context: String, error: Error) {
-        guard provider == .binance, activeProvider == .binance else { return }
+        switch provider {
+        case .binance:
+            guard activeProvider == .binance else { return }
 
-        binanceConsecutiveFailures += 1
-        logger.error("Binance failure #\(self.binanceConsecutiveFailures) during \(context, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            binanceConsecutiveFailures += 1
+            logger.error("Binance failure #\(self.binanceConsecutiveFailures) during \(context, privacy: .public): \(error.localizedDescription, privacy: .public)")
 
-        guard binanceConsecutiveFailures >= AppConfiguration.ProviderFallback.binanceFailureThreshold else { return }
-        switchProvider(to: .okx, reason: "Binance failed \(binanceConsecutiveFailures) times in a row")
+            guard binanceConsecutiveFailures >= AppConfiguration.ProviderFallback.binanceFailureThreshold else { return }
+            switchProvider(to: .okx, reason: "Binance failed \(binanceConsecutiveFailures) times in a row")
+
+        case .okx:
+            guard activeProvider == .okx else { return }
+
+            okxConsecutiveFailures += 1
+            logger.error("OKX failure #\(self.okxConsecutiveFailures) during \(context, privacy: .public): \(error.localizedDescription, privacy: .public)")
+
+            guard okxConsecutiveFailures >= AppConfiguration.ProviderFallback.okxFailureThreshold else { return }
+
+            if !isOKXUnavailable {
+                logger.notice("OKX fallback became unavailable after \(self.okxConsecutiveFailures) consecutive failures")
+                setOKXUnavailable(true)
+            }
+
+            for symbol in selectedSymbols {
+                updateConnectionState(for: symbol, state: .error(.networkError(error)))
+            }
+        }
     }
 
     private func switchProvider(to provider: MarketDataProvider, reason: String) {
@@ -723,6 +752,8 @@ class WebSocketManager: ObservableObject {
         disconnectAllBinanceWebSockets()
         disconnectOKXWebSocket(resetConnectionStates: true)
 
+        okxConsecutiveFailures = 0
+        setOKXUnavailable(false)
         activeProvider = provider
 
         NotificationCenter.default.post(
@@ -760,6 +791,19 @@ class WebSocketManager: ObservableObject {
         } catch {
             logger.error("Binance hourly recovery check failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    private func setOKXUnavailable(_ unavailable: Bool) {
+        guard isOKXUnavailable != unavailable else { return }
+        isOKXUnavailable = unavailable
+
+        guard activeProvider == .okx else { return }
+
+        NotificationCenter.default.post(
+            name: .providerChanged,
+            object: nil,
+            userInfo: [NotificationUserInfoKey.provider: activeProvider.rawValue]
+        )
     }
 
     private func webSocketURL(for symbol: String?, provider: MarketDataProvider) -> URL? {

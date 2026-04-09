@@ -35,6 +35,7 @@ struct AppConfiguration {
 
     struct ProviderFallback {
         static let binanceFailureThreshold = 3
+        static let okxFailureThreshold = 3
         static let binanceRecoveryCheckInterval: TimeInterval = 3600.0
     }
 
