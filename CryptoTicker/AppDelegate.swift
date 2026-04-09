@@ -39,13 +39,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     ]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        LaunchTrace.write("applicationDidFinishLaunching entered")
         logger.info("Application launching...")
 
         setupStatusBarItem()
+        LaunchTrace.write("status bar item set up")
         setupMenu()
+        LaunchTrace.write("menu set up")
         setupObservers()
+        LaunchTrace.write("observers set up")
         refreshDisplay(forceMenuRefresh: true, forceStatusBarRefresh: true)
+        LaunchTrace.write("display refreshed")
         presentStatusMenuIfNeeded()
+        LaunchTrace.write("presentStatusMenuIfNeeded completed")
         logger.info("Application launched successfully")
     }
     
