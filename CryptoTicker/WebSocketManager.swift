@@ -61,6 +61,11 @@ private struct SnapshotFetchFailure: Error {
     let underlyingError: Error
 }
 
+private enum SnapshotFailurePolicy {
+    case updateProviderHealth
+    case ignoreProviderHealth
+}
+
 @MainActor
 class WebSocketManager: ObservableObject {
     @Published var prices: [String: String] = [:]
@@ -129,7 +134,11 @@ class WebSocketManager: ObservableObject {
 
     func fetchAllCryptoPrices() async {
         logger.info("Fetching prices for all \(self.availableCurrencies.count) cryptocurrencies from \(self.activeProvider.displayName, privacy: .public)")
-        await fetchPrices(for: availableCurrencies.map(\.symbol), provider: activeProvider)
+        await fetchPrices(
+            for: availableCurrencies.map(\.symbol),
+            provider: activeProvider,
+            failurePolicy: .updateProviderHealth
+        )
         logger.info("Completed fetching all cryptocurrency prices")
     }
 
@@ -153,7 +162,11 @@ class WebSocketManager: ObservableObject {
         guard !symbolsToRefresh.isEmpty else { return }
 
         logger.info("Refreshing \(symbolsToRefresh.count) stale menu snapshots from \(self.activeProvider.displayName, privacy: .public)")
-        await fetchPrices(for: symbolsToRefresh, provider: activeProvider)
+        await fetchPrices(
+            for: symbolsToRefresh,
+            provider: activeProvider,
+            failurePolicy: .ignoreProviderHealth
+        )
     }
 
     nonisolated private static func fetchPriceSnapshot(for symbol: String, provider: MarketDataProvider) async throws -> PriceSnapshot {
@@ -683,7 +696,11 @@ class WebSocketManager: ObservableObject {
         reconnectTasks.removeValue(forKey: symbol)
     }
 
-    private func fetchPrices(for symbols: [String], provider: MarketDataProvider) async {
+    private func fetchPrices(
+        for symbols: [String],
+        provider: MarketDataProvider,
+        failurePolicy: SnapshotFailurePolicy
+    ) async {
         guard !symbols.isEmpty else { return }
 
         var snapshots: [PriceSnapshot] = []
@@ -713,7 +730,7 @@ class WebSocketManager: ObservableObject {
 
         guard activeProvider == provider else { return }
 
-        if let firstFailure = failures.first {
+        if failurePolicy == .updateProviderHealth, let firstFailure = failures.first {
             let context = failures.count == symbols.count
                 ? "Snapshot refresh"
                 : "Snapshot refresh partial (\(failures.count)/\(symbols.count) failed)"
@@ -724,7 +741,7 @@ class WebSocketManager: ObservableObject {
 
         guard !snapshots.isEmpty else { return }
 
-        if failures.isEmpty {
+        if failurePolicy == .updateProviderHealth, failures.isEmpty {
             recordProviderSuccess(provider)
         }
 

@@ -35,6 +35,21 @@ final class AppLaunchResolver {
             launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
             launcher.arguments = [installedBundleURL.path]
             try launcher.run()
+            launcher.waitUntilExit()
+
+            guard launcher.terminationStatus == 0 else {
+                logger.error(
+                    "Open returned non-zero status while redirecting to installed app at \(installedBundleURL.path, privacy: .public): \(launcher.terminationStatus)"
+                )
+                return true
+            }
+
+            guard waitForInstalledAppLaunch(at: installedBundleURL, excluding: ProcessInfo.processInfo.processIdentifier) else {
+                logger.error(
+                    "Installed app at \(installedBundleURL.path, privacy: .public) did not finish launching after redirect request"
+                )
+                return true
+            }
 
             logger.info(
                 "Redirecting launch from \(currentBundleURL.path, privacy: .public) to installed app at \(installedBundleURL.path, privacy: .public)"
@@ -48,6 +63,32 @@ final class AppLaunchResolver {
             )
             return true
         }
+    }
+
+    private func waitForInstalledAppLaunch(at installedBundleURL: URL, excluding currentProcessID: Int32) -> Bool {
+        let canonicalInstalledBundleURL = standardized(installedBundleURL)
+        let deadline = Date().addingTimeInterval(2.0)
+
+        while Date() < deadline {
+            let launchedApp = NSRunningApplication.runningApplications(withBundleIdentifier: AppConfiguration.bundleIdentifier)
+                .first { runningApp in
+                    guard runningApp.processIdentifier != currentProcessID,
+                          !runningApp.isTerminated,
+                          let runningBundleURL = runningApp.bundleURL else {
+                        return false
+                    }
+
+                    return standardized(runningBundleURL) == canonicalInstalledBundleURL
+                }
+
+            if launchedApp != nil {
+                return true
+            }
+
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+
+        return false
     }
 
     private func preferredLaunchBundleURL(for currentBundleURL: URL) -> URL? {

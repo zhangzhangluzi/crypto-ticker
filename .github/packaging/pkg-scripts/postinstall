@@ -31,11 +31,10 @@ if [ -x "$LSREGISTER" ]; then
   if [ -n "$USER_HOME" ] && [ "$USER_APP_PATH" != "$APP_PATH" ]; then
     /bin/launchctl asuser "$USER_ID" "$LSREGISTER" -u "$USER_APP_PATH" >/dev/null 2>&1 || true
   fi
-  /bin/launchctl asuser "$USER_ID" "$LSREGISTER" -f "$APP_PATH" >/dev/null 2>&1 || true
+/bin/launchctl asuser "$USER_ID" "$LSREGISTER" -f "$APP_PATH" >/dev/null 2>&1 || true
 fi
 
 /bin/launchctl asuser "$USER_ID" /usr/bin/mdimport "$APP_PATH" >/dev/null 2>&1 || true
-/bin/launchctl asuser "$USER_ID" /usr/bin/killall Dock >/dev/null 2>&1 || true
 
 /bin/launchctl asuser "$USER_ID" /usr/bin/open -a "$APP_PATH" >/dev/null 2>&1 || true
 
