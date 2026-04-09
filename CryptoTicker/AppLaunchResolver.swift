@@ -93,13 +93,13 @@ final class AppLaunchResolver {
 
         switch (currentVersion, installedVersion) {
         case let (.some(currentVersion), .some(installedVersion)):
-            return installedVersion >= currentVersion
+            return installedVersion > currentVersion
         case (.none, .some):
             return true
         case (.some, .none):
             return false
         case (.none, .none):
-            return true
+            return false
         }
     }
 
