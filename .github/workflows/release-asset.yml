@@ -118,6 +118,22 @@ jobs:
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
+      - name: Run tests
+        run: |
+          xcodebuild \
+            -project CryptoTicker.xcodeproj \
+            -scheme CryptoTicker \
+            -destination "platform=macOS" \
+            test
+
+      - name: Run static analyzer
+        run: |
+          xcodebuild \
+            -project CryptoTicker.xcodeproj \
+            -scheme CryptoTicker \
+            -destination "platform=macOS" \
+            analyze
+
       - name: Build release app
         run: |
           xcodebuild \
@@ -154,7 +170,7 @@ jobs:
           if [ "$SIGNING_ENABLED" = "true" ]; then
             codesign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$APP_IDENTITY" --keychain "$KEYCHAIN_PATH" "$APP_PATH"
           else
-            codesign --force --deep --entitlements "$ENTITLEMENTS_PATH" --sign - "$APP_PATH"
+            codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS_PATH" --sign - "$APP_PATH"
           fi
 
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"

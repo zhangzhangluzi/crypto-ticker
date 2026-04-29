@@ -36,6 +36,8 @@ fi
 
 /bin/launchctl asuser "$USER_ID" /usr/bin/mdimport "$APP_PATH" >/dev/null 2>&1 || true
 
-/bin/launchctl asuser "$USER_ID" /usr/bin/open -a "$APP_PATH" >/dev/null 2>&1 || true
+if ! /bin/launchctl asuser "$USER_ID" /usr/bin/open "$APP_PATH" >/dev/null 2>&1; then
+  /usr/bin/logger -t CryptoTicker "Failed to launch $APP_PATH after install for $CONSOLE_USER"
+fi
 
 exit 0

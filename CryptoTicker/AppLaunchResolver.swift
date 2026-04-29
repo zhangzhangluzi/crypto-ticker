@@ -4,20 +4,6 @@ import os.log
 
 @MainActor
 final class AppLaunchResolver {
-    private struct BundleVersion: Comparable {
-        let marketingVersion: String
-        let buildVersion: String
-
-        static func < (lhs: BundleVersion, rhs: BundleVersion) -> Bool {
-            let marketingComparison = lhs.marketingVersion.compare(rhs.marketingVersion, options: .numeric)
-            if marketingComparison != .orderedSame {
-                return marketingComparison == .orderedAscending
-            }
-
-            return lhs.buildVersion.compare(rhs.buildVersion, options: .numeric) == .orderedAscending
-        }
-    }
-
     private let fileManager = FileManager.default
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppLaunchResolver")
 
@@ -29,17 +15,22 @@ final class AppLaunchResolver {
         }
 
         do {
-            terminateRunningInstalledCopies(at: installedBundleURL)
+            if let runningInstalledApp = runningInstalledApplication(at: installedBundleURL, excluding: ProcessInfo.processInfo.processIdentifier) {
+                if try openInstalledBundle(at: installedBundleURL, forceNewInstance: false) != 0 {
+                    _ = runningInstalledApp.activate(options: [])
+                }
+                logger.info(
+                    "Redirecting launch from \(currentBundleURL.path, privacy: .public) to running installed app at \(installedBundleURL.path, privacy: .public)"
+                )
+                NSApplication.shared.terminate(nil)
+                return false
+            }
 
-            let launcher = Process()
-            launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            launcher.arguments = [installedBundleURL.path]
-            try launcher.run()
-            launcher.waitUntilExit()
+            let terminationStatus = try openInstalledBundle(at: installedBundleURL, forceNewInstance: true)
 
-            guard launcher.terminationStatus == 0 else {
+            guard terminationStatus == 0 else {
                 logger.error(
-                    "Open returned non-zero status while redirecting to installed app at \(installedBundleURL.path, privacy: .public): \(launcher.terminationStatus)"
+                    "Open returned non-zero status while redirecting to installed app at \(installedBundleURL.path, privacy: .public): \(terminationStatus)"
                 )
                 return true
             }
@@ -65,23 +56,35 @@ final class AppLaunchResolver {
         }
     }
 
-    private func waitForInstalledAppLaunch(at installedBundleURL: URL, excluding currentProcessID: Int32) -> Bool {
+    private func openInstalledBundle(at installedBundleURL: URL, forceNewInstance: Bool) throws -> Int32 {
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        launcher.arguments = forceNewInstance ? ["-n", installedBundleURL.path] : [installedBundleURL.path]
+        try launcher.run()
+        launcher.waitUntilExit()
+        return launcher.terminationStatus
+    }
+
+    private func runningInstalledApplication(at installedBundleURL: URL, excluding currentProcessID: Int32) -> NSRunningApplication? {
         let canonicalInstalledBundleURL = standardized(installedBundleURL)
+
+        return NSRunningApplication.runningApplications(withBundleIdentifier: AppConfiguration.bundleIdentifier)
+            .first { runningApp in
+                guard runningApp.processIdentifier != currentProcessID,
+                      !runningApp.isTerminated,
+                      let runningBundleURL = runningApp.bundleURL else {
+                    return false
+                }
+
+                return standardized(runningBundleURL) == canonicalInstalledBundleURL
+            }
+    }
+
+    private func waitForInstalledAppLaunch(at installedBundleURL: URL, excluding currentProcessID: Int32) -> Bool {
         let deadline = Date().addingTimeInterval(2.0)
 
         while Date() < deadline {
-            let launchedApp = NSRunningApplication.runningApplications(withBundleIdentifier: AppConfiguration.bundleIdentifier)
-                .first { runningApp in
-                    guard runningApp.processIdentifier != currentProcessID,
-                          !runningApp.isTerminated,
-                          let runningBundleURL = runningApp.bundleURL else {
-                        return false
-                    }
-
-                    return standardized(runningBundleURL) == canonicalInstalledBundleURL
-                }
-
-            if launchedApp != nil {
+            if runningInstalledApplication(at: installedBundleURL, excluding: currentProcessID) != nil {
                 return true
             }
 
@@ -132,61 +135,21 @@ final class AppLaunchResolver {
         let currentVersion = bundleVersion(for: currentBundleURL)
         let installedVersion = bundleVersion(for: installedBundleURL)
 
-        switch (currentVersion, installedVersion) {
-        case let (.some(currentVersion), .some(installedVersion)):
-            return installedVersion > currentVersion
-        case (.none, .some):
-            return true
-        case (.some, .none):
-            return false
-        case (.none, .none):
-            return false
-        }
+        return AppLaunchRedirectionPolicy.shouldRedirect(
+            from: currentVersion,
+            to: installedVersion,
+            currentBundlePath: currentBundleURL.path
+        )
     }
 
-    private func bundleVersion(for bundleURL: URL) -> BundleVersion? {
+    private func bundleVersion(for bundleURL: URL) -> AppBundleVersion? {
         guard let bundle = Bundle(url: bundleURL) else {
             return nil
         }
 
         let marketingVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         let buildVersion = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
-        return BundleVersion(marketingVersion: marketingVersion, buildVersion: buildVersion)
-    }
-
-    private func terminateRunningInstalledCopies(at installedBundleURL: URL) {
-        let currentProcessID = ProcessInfo.processInfo.processIdentifier
-        let canonicalInstalledBundleURL = standardized(installedBundleURL)
-        let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: AppConfiguration.bundleIdentifier)
-            .filter { runningApp in
-                guard runningApp.processIdentifier != currentProcessID,
-                      let runningBundleURL = runningApp.bundleURL else {
-                    return false
-                }
-
-                return standardized(runningBundleURL) == canonicalInstalledBundleURL
-            }
-
-        guard !runningApps.isEmpty else { return }
-
-        for runningApp in runningApps {
-            logger.info("Terminating running installed app copy with pid \(runningApp.processIdentifier)")
-            _ = runningApp.terminate()
-        }
-
-        let deadline = Date().addingTimeInterval(1.0)
-        while Date() < deadline {
-            if runningApps.allSatisfy(\.isTerminated) {
-                return
-            }
-
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
-        }
-
-        for runningApp in runningApps where !runningApp.isTerminated {
-            logger.notice("Force terminating running installed app copy with pid \(runningApp.processIdentifier)")
-            _ = runningApp.forceTerminate()
-        }
+        return AppBundleVersion(marketingVersion: marketingVersion, buildVersion: buildVersion)
     }
 
     private func standardized(_ url: URL) -> URL {

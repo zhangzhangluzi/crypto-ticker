@@ -17,9 +17,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currencyMenuItems: [String: NSMenuItem] = [:]
     private var pendingMenuRefreshSymbols: Set<String> = []
     private var isMenuOpen = false
-    private var shouldPresentMenuAfterLaunch = true
     private let appLaunchResolver = AppLaunchResolver()
-    private lazy var webSocketManager = WebSocketManager()
+    private var webSocketManager: WebSocketManager!
+    private var didStartRuntime = false
     private let logger = Logger(subsystem: AppConfiguration.Logging.subsystem, category: "AppDelegate")
 
     private static let menuParagraphStyle: NSParagraphStyle = {
@@ -42,28 +42,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("Application launching...")
 
+        guard !isRunningUnitTests else {
+            logger.info("Skipping app runtime setup while running unit tests")
+            return
+        }
+
         guard appLaunchResolver.prepareForLaunch() else {
             logger.info("Launch redirected to installed app copy")
             return
         }
 
+        webSocketManager = WebSocketManager()
+        didStartRuntime = true
         setupStatusBarItem()
         setupMenu()
         setupObservers()
         refreshDisplay(forceMenuRefresh: true, forceStatusBarRefresh: true)
-        presentStatusMenuIfNeeded()
         logger.info("Application launched successfully")
     }
     
     func applicationWillTerminate(_ notification: Notification) {
         logger.info("Application terminating...")
         NotificationCenter.default.removeObserver(self)
-        webSocketManager.disconnectWebSockets()
-    }
-
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        presentStatusMenu()
-        return false
+        if didStartRuntime {
+            webSocketManager.disconnectWebSockets()
+        }
     }
 
     private func setupStatusBarItem() {
@@ -78,6 +81,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         button.font = NSFont(name: AppConfiguration.UI.statusBarFont, size: AppConfiguration.UI.statusBarFontSize)
         
         logger.info("Status bar item created")
+    }
+
+    private var isRunningUnitTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
     
     private func setupMenu() {
@@ -98,31 +105,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarMenu.addItem(.separator())
         statusBarMenu.addItem(createQuitMenuItem())
         statusBarItem.menu = statusBarMenu
-    }
-
-    private func presentStatusMenuIfNeeded() {
-        guard shouldPresentMenuAfterLaunch else { return }
-        shouldPresentMenuAfterLaunch = false
-
-        DispatchQueue.main.async { [weak self] in
-            self?.presentStatusMenu()
-        }
-    }
-
-    private func presentStatusMenu() {
-        guard let button = statusBarItem.button,
-              let window = button.window else {
-            return
-        }
-
-        let buttonRectInWindow = button.convert(button.bounds, to: nil)
-        let buttonRectOnScreen = window.convertToScreen(buttonRectInWindow)
-        let menuOrigin = NSPoint(
-            x: buttonRectOnScreen.maxX - statusBarMenu.size.width,
-            y: buttonRectOnScreen.minY - 4
-        )
-
-        statusBarMenu.popUp(positioning: nil, at: menuOrigin, in: nil)
     }
     
     private func setupObservers() {

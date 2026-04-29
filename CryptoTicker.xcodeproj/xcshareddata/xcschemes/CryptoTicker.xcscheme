@@ -30,7 +30,27 @@
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "E0A6390A2D535D8500F65FDE"
+               BuildableName = "CryptoTickerTests.xctest"
+               BlueprintName = "CryptoTickerTests"
+               ReferencedContainer = "container:CryptoTicker.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "E0A638672D535D8300F65FDE"
+            BuildableName = "CryptoTicker.app"
+            BlueprintName = "CryptoTicker"
+            ReferencedContainer = "container:CryptoTicker.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

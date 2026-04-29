@@ -30,6 +30,7 @@ struct AppConfiguration {
 
     struct WebSocket {
         static let reconnectDelay: TimeInterval = 5.0
+        static let connectionTimeout: TimeInterval = 15.0
         static let snapshotRefreshInterval: TimeInterval = 30.0
     }
 
