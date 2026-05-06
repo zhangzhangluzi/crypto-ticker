@@ -14,7 +14,7 @@
 
 ## Requirements
 
-- macOS 26.0 or later
+- macOS 14.0 or later
 - A recent Xcode version with the macOS SDK (for local builds)
 
 ## Installation
@@ -23,7 +23,7 @@
 > **Why not in the App Store?**  
 > Because publishing apps cost money, and I’d rather **HODL** my crypto.
 
-1. Download **`CryptoTicker.pkg`** from the [latest release](https://github.com/zhangzhangluzi/crypto-ticker/releases).
+1. Download **`CryptoTicker.pkg`** from the [latest release](https://github.com/zhangzhangluzi/crypto-ticker/releases). Assets with `-unsigned` in the filename are testing builds and are not Developer ID notarized.
 2. Run the installer package. It installs **CryptoTicker** into **Applications**, updates the existing copy in place, and launches it for you.
 3. **CryptoTicker** appears in **Applications** and Launchpad. Click the doge icon to launch it.
 4. **CryptoTicker** runs in the menu bar and does not stay in the Dock while active. Click the menu bar icon to open its menu.

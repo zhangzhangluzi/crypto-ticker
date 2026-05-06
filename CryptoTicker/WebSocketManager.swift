@@ -12,11 +12,14 @@ class WebSocketManager: ObservableObject {
     var webSocketTasks: [String: URLSessionWebSocketTask] = [:]
     var reconnectTasks: [String: Task<Void, Never>] = [:]
     var connectionTimeoutTasks: [String: Task<Void, Never>] = [:]
+    var staleDataTimeoutTasks: [String: Task<Void, Never>] = [:]
     var okxWebSocketTask: URLSessionWebSocketTask?
     var okxReconnectTask: Task<Void, Never>?
     var okxConnectionTimeoutTasks: [String: Task<Void, Never>] = [:]
     var okxSubscribedSymbols: Set<String> = []
     var lastSnapshotUpdatedAt: [String: Date] = [:]
+    var lastWebSocketMessageAt: [String: Date] = [:]
+    var providerFailureCountsBySymbol: [MarketDataProvider: [String: Int]] = [:]
     var providerRecoveryTask: Task<Void, Never>?
     var binanceConsecutiveFailures = 0
     var okxConsecutiveFailures = 0

@@ -3,7 +3,7 @@
 APP_PATH="/Applications/CryptoTicker.app"
 CONSOLE_USER="$(/usr/bin/stat -f '%Su' /dev/console)"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-USER_HOME="$(/usr/bin/dscl . -read /Users/$CONSOLE_USER NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+USER_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
 USER_APP_PATH="$USER_HOME/Applications/CryptoTicker.app"
 
 if [ ! -d "$APP_PATH" ]; then
@@ -35,6 +35,45 @@ if [ -x "$LSREGISTER" ]; then
 fi
 
 /bin/launchctl asuser "$USER_ID" /usr/bin/mdimport "$APP_PATH" >/dev/null 2>&1 || true
+
+RUNNING_PIDS="$(/usr/bin/pgrep -x CryptoTicker 2>/dev/null || true)"
+TERMINATED_PIDS=""
+
+for PID in $RUNNING_PIDS; do
+  COMMAND="$(/bin/ps -p "$PID" -o command= 2>/dev/null || true)"
+  case "$COMMAND" in
+    *"/CryptoTicker.app/Contents/MacOS/CryptoTicker"*)
+      if /bin/kill -TERM "$PID" >/dev/null 2>&1; then
+        TERMINATED_PIDS="$TERMINATED_PIDS $PID"
+      fi
+      ;;
+  esac
+done
+
+if [ -n "$TERMINATED_PIDS" ]; then
+  WAIT_COUNT=0
+  while [ "$WAIT_COUNT" -lt 5 ]; do
+    STILL_RUNNING=false
+    for PID in $TERMINATED_PIDS; do
+      if /bin/kill -0 "$PID" >/dev/null 2>&1; then
+        STILL_RUNNING=true
+      fi
+    done
+
+    if [ "$STILL_RUNNING" = false ]; then
+      break
+    fi
+
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+    /bin/sleep 1
+  done
+
+  for PID in $TERMINATED_PIDS; do
+    if /bin/kill -0 "$PID" >/dev/null 2>&1; then
+      /usr/bin/logger -t CryptoTicker "CryptoTicker process $PID did not exit before relaunch"
+    fi
+  done
+fi
 
 if ! /bin/launchctl asuser "$USER_ID" /usr/bin/open "$APP_PATH" >/dev/null 2>&1; then
   /usr/bin/logger -t CryptoTicker "Failed to launch $APP_PATH after install for $CONSOLE_USER"

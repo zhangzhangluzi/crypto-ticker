@@ -28,6 +28,10 @@ extension WebSocketManager {
 
         let symbols = okxSubscribedSymbols
         okxSubscribedSymbols.removeAll()
+        for symbol in symbols {
+            cancelStaleDataTimeout(for: symbol)
+            lastWebSocketMessageAt.removeValue(forKey: symbol)
+        }
 
         guard resetConnectionStates else { return }
 
@@ -42,6 +46,14 @@ extension WebSocketManager {
         }
         connectionTimeoutTasks.removeAll()
         cancelAllOKXConnectionTimeouts()
+        cancelAllStaleDataTimeouts()
+    }
+
+    func cancelAllStaleDataTimeouts() {
+        for task in staleDataTimeoutTasks.values {
+            task.cancel()
+        }
+        staleDataTimeoutTasks.removeAll()
     }
 
     func scheduleReconnect(for symbol: String? = nil, provider: MarketDataProvider) {
@@ -92,7 +104,7 @@ extension WebSocketManager {
     }
 
     nonisolated static func probeBinanceRealtimeFeed(for symbol: String) async throws {
-        guard let url = URL(string: "\(AppConfiguration.API.binanceWebSocketURL)/\(symbol)@trade") else {
+        guard let url = URL(string: "\(AppConfiguration.API.binanceWebSocketURL)/\(symbol)@ticker") else {
             throw WebSocketError.invalidURL
         }
 
@@ -156,6 +168,8 @@ extension WebSocketManager {
 
         for symbol in removedSymbols {
             cancelOKXConnectionTimeout(for: symbol)
+            cancelStaleDataTimeout(for: symbol)
+            lastWebSocketMessageAt.removeValue(forKey: symbol)
             updateConnectionState(for: symbol, state: .disconnected)
         }
 
@@ -259,9 +273,10 @@ extension WebSocketManager {
                 case .failure(let error):
                     self.logger.error("WebSocket error for \(symbol) on Binance: \(error.localizedDescription, privacy: .public)")
                     self.cancelConnectionTimeout(for: symbol)
+                    self.cancelStaleDataTimeout(for: symbol)
                     self.webSocketTasks.removeValue(forKey: symbol)
                     self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
-                    self.recordProviderFailure(.binance, context: "WebSocket receive", error: error)
+                    self.recordProviderFailure(.binance, context: "WebSocket receive", error: error, symbol: symbol)
                     self.scheduleReconnect(for: symbol, provider: .binance)
                 }
             }
@@ -271,12 +286,14 @@ extension WebSocketManager {
     private func handleBinanceMessage(_ text: String, for symbol: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let priceStr = json["p"] as? String else {
+              let priceStr = json["c"] as? String else {
             logger.error("Failed to parse Binance WebSocket data for \(symbol)")
             return
         }
 
-        recordProviderSuccess(.binance)
+        guard let task = webSocketTasks[symbol] else { return }
+
+        markWebSocketMessageReceived(for: symbol, provider: .binance, task: task)
 
         if case .connecting = connectionStates[symbol] {
             cancelConnectionTimeout(for: symbol)
@@ -284,6 +301,18 @@ extension WebSocketManager {
         }
 
         updatePrice(priceStr, for: symbol)
+
+        if let changePercent = json["P"] as? String {
+            let formattedChange = MarketDataFormatter.formatPercent(changePercent) + "%"
+            if priceChanges[symbol] != formattedChange {
+                priceChanges[symbol] = formattedChange
+                NotificationCenter.default.post(
+                    name: .priceUpdated,
+                    object: nil,
+                    userInfo: [NotificationUserInfoKey.symbols: [symbol]]
+                )
+            }
+        }
     }
 
     private func receiveOKXMessages(_ task: URLSessionWebSocketTask) {
@@ -316,8 +345,10 @@ extension WebSocketManager {
                 case .failure(let error):
                     self.logger.error("OKX WebSocket error: \(error.localizedDescription, privacy: .public)")
                     self.cancelAllOKXConnectionTimeouts()
+                    self.cancelAllStaleDataTimeouts()
                     self.okxWebSocketTask = nil
                     for symbol in self.okxSubscribedSymbols {
+                        self.lastWebSocketMessageAt.removeValue(forKey: symbol)
                         self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
                     }
                     self.recordProviderFailure(.okx, context: "WebSocket receive", error: error)
@@ -347,21 +378,27 @@ extension WebSocketManager {
 
                 if affectedSymbols == okxSubscribedSymbols {
                     cancelAllOKXConnectionTimeouts()
+                    cancelAllStaleDataTimeouts()
                     task.cancel(with: .goingAway, reason: nil)
                     okxWebSocketTask = nil
                 } else {
                     for symbol in affectedSymbols {
                         cancelOKXConnectionTimeout(for: symbol)
+                        cancelStaleDataTimeout(for: symbol)
+                        lastWebSocketMessageAt.removeValue(forKey: symbol)
                     }
                     okxSubscribedSymbols.subtract(affectedSymbols)
                 }
 
                 for symbol in affectedSymbols {
+                    lastWebSocketMessageAt.removeValue(forKey: symbol)
                     updateConnectionState(for: symbol, state: .error(error))
                 }
 
                 if okxWebSocketTask == nil || !hasConnectedSelectedOKXSymbol() {
-                    recordProviderFailure(.okx, context: "WebSocket subscribe", error: error)
+                    for symbol in affectedSymbols {
+                        recordProviderFailure(.okx, context: "WebSocket subscribe", error: error, symbol: symbol)
+                    }
                     scheduleReconnect(provider: .okx)
                 }
             }
@@ -372,14 +409,14 @@ extension WebSocketManager {
             return
         }
 
-        recordProviderSuccess(.okx)
-
         for ticker in dataArray {
             guard let instId = ticker["instId"] as? String,
                   let symbol = Self.symbolsByOKXInstrumentID[instId],
                   let priceStr = ticker["last"] as? String else {
                 continue
             }
+
+            markWebSocketMessageReceived(for: symbol, provider: .okx, task: task)
 
             if case .connecting = connectionStates[symbol] {
                 cancelOKXConnectionTimeout(for: symbol)
@@ -393,6 +430,8 @@ extension WebSocketManager {
     private func disconnectWebSocket(for symbol: String) {
         cancelReconnect(for: symbol)
         cancelConnectionTimeout(for: symbol)
+        cancelStaleDataTimeout(for: symbol)
+        lastWebSocketMessageAt.removeValue(forKey: symbol)
 
         if let task = webSocketTasks.removeValue(forKey: symbol) {
             task.cancel(with: .goingAway, reason: nil)
@@ -430,13 +469,14 @@ extension WebSocketManager {
                 }
 
                 self.connectionTimeoutTasks.removeValue(forKey: symbol)
+                self.cancelStaleDataTimeout(for: symbol)
                 self.webSocketTasks.removeValue(forKey: symbol)
                 task.cancel(with: .goingAway, reason: nil)
 
                 let error = URLError(.timedOut)
                 self.logger.error("WebSocket connect timeout for \(symbol) on \(provider.displayName, privacy: .public)")
                 self.updateConnectionState(for: symbol, state: .error(.networkError(error)))
-                self.recordProviderFailure(provider, context: "WebSocket connect timeout", error: error)
+                self.recordProviderFailure(provider, context: "WebSocket connect timeout", error: error, symbol: symbol)
 
                 guard self.activeProvider == provider else { return }
                 self.scheduleReconnect(for: symbol, provider: provider)
@@ -478,7 +518,7 @@ extension WebSocketManager {
 
                     self.okxWebSocketTask = nil
                     task.cancel(with: .goingAway, reason: nil)
-                    self.recordProviderFailure(.okx, context: "WebSocket connect timeout", error: error)
+                    self.recordProviderFailure(.okx, context: "WebSocket connect timeout", error: error, symbol: symbol)
 
                     guard self.activeProvider == .okx else { return }
                     self.scheduleReconnect(provider: .okx)
@@ -487,9 +527,88 @@ extension WebSocketManager {
         }
     }
 
+    private func markWebSocketMessageReceived(for symbol: String, provider: MarketDataProvider, task: URLSessionWebSocketTask) {
+        guard selectedSymbols.contains(symbol) else { return }
+
+        lastWebSocketMessageAt[symbol] = Date()
+        recordProviderSuccess(provider, symbol: symbol)
+        scheduleStaleDataTimeout(for: symbol, provider: provider, task: task)
+    }
+
+    private func scheduleStaleDataTimeout(for symbol: String, provider: MarketDataProvider, task: URLSessionWebSocketTask) {
+        cancelStaleDataTimeout(for: symbol)
+
+        staleDataTimeoutTasks[symbol] = Task { [weak self] in
+            let delay = UInt64(AppConfiguration.WebSocket.staleDataTimeout * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: delay)
+
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                self?.handleStaleDataTimeout(for: symbol, provider: provider, task: task)
+            }
+        }
+    }
+
+    private func handleStaleDataTimeout(for symbol: String, provider: MarketDataProvider, task: URLSessionWebSocketTask) {
+        guard activeProvider == provider,
+              selectedSymbols.contains(symbol),
+              isCurrentWebSocketTask(task, for: symbol, provider: provider),
+              case .connected = connectionStates[symbol] else {
+            return
+        }
+
+        let lastMessageAt = lastWebSocketMessageAt[symbol] ?? .distantPast
+        guard Date().timeIntervalSince(lastMessageAt) >= AppConfiguration.WebSocket.staleDataTimeout else {
+            scheduleStaleDataTimeout(for: symbol, provider: provider, task: task)
+            return
+        }
+
+        cancelStaleDataTimeout(for: symbol)
+        lastWebSocketMessageAt.removeValue(forKey: symbol)
+
+        let error = URLError(.timedOut)
+        logger.error("WebSocket stale data timeout for \(symbol, privacy: .public) on \(provider.displayName, privacy: .public)")
+        updateConnectionState(for: symbol, state: .error(.networkError(error)))
+        recordProviderFailure(provider, context: "WebSocket stale data", error: error, symbol: symbol)
+
+        guard activeProvider == provider else { return }
+
+        switch provider {
+        case .binance:
+            if let currentTask = webSocketTasks.removeValue(forKey: symbol), currentTask === task {
+                currentTask.cancel(with: .goingAway, reason: nil)
+            }
+            scheduleReconnect(for: symbol, provider: provider)
+
+        case .okx:
+            guard okxWebSocketTask === task else { return }
+            cancelAllOKXConnectionTimeouts()
+            cancelAllStaleDataTimeouts()
+            okxWebSocketTask = nil
+            okxSubscribedSymbols.removeAll()
+            task.cancel(with: .goingAway, reason: nil)
+            scheduleReconnect(provider: .okx)
+        }
+    }
+
+    private func isCurrentWebSocketTask(_ task: URLSessionWebSocketTask, for symbol: String, provider: MarketDataProvider) -> Bool {
+        switch provider {
+        case .binance:
+            return webSocketTasks[symbol] === task
+        case .okx:
+            return okxWebSocketTask === task && okxSubscribedSymbols.contains(symbol)
+        }
+    }
+
     private func cancelConnectionTimeout(for symbol: String) {
         connectionTimeoutTasks[symbol]?.cancel()
         connectionTimeoutTasks.removeValue(forKey: symbol)
+    }
+
+    private func cancelStaleDataTimeout(for symbol: String) {
+        staleDataTimeoutTasks[symbol]?.cancel()
+        staleDataTimeoutTasks.removeValue(forKey: symbol)
     }
 
     private func cancelOKXConnectionTimeout(for symbol: String) {
@@ -526,7 +645,7 @@ extension WebSocketManager {
         switch provider {
         case .binance:
             guard let symbol else { return nil }
-            return URL(string: "\(AppConfiguration.API.binanceWebSocketURL)/\(symbol)@trade")
+            return URL(string: "\(AppConfiguration.API.binanceWebSocketURL)/\(symbol)@ticker")
         case .okx:
             return URL(string: AppConfiguration.API.okxWebSocketURL)
         }
@@ -612,7 +731,7 @@ extension WebSocketManager {
         }
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["p"] as? String != nil else {
+              json["c"] as? String != nil else {
             throw WebSocketError.dataParsingFailed
         }
     }

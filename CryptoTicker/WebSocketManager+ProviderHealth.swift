@@ -1,7 +1,16 @@
 import Foundation
 
 extension WebSocketManager {
-    func recordProviderSuccess(_ provider: MarketDataProvider) {
+    func recordProviderSuccess(_ provider: MarketDataProvider, symbol: String? = nil) {
+        if let symbol {
+            setProviderFailureCount(0, provider: provider, symbol: symbol)
+            if provider == .okx,
+               selectedSymbols.allSatisfy({ providerFailureCount(provider: provider, symbol: $0) == 0 }) {
+                setOKXUnavailable(false)
+            }
+            return
+        }
+
         switch provider {
         case .binance:
             if binanceConsecutiveFailures != 0 {
@@ -17,7 +26,12 @@ extension WebSocketManager {
         }
     }
 
-    func recordProviderFailure(_ provider: MarketDataProvider, context: String, error: Error) {
+    func recordProviderFailure(_ provider: MarketDataProvider, context: String, error: Error, symbol: String? = nil) {
+        if let symbol {
+            recordSymbolProviderFailure(provider, context: context, error: error, symbol: symbol)
+            return
+        }
+
         switch provider {
         case .binance:
             guard activeProvider == .binance else { return }
@@ -45,6 +59,44 @@ extension WebSocketManager {
                 updateConnectionState(for: symbol, state: .error(.networkError(error)))
             }
         }
+    }
+
+    private func recordSymbolProviderFailure(_ provider: MarketDataProvider, context: String, error: Error, symbol: String) {
+        let nextFailureCount = providerFailureCount(provider: provider, symbol: symbol) + 1
+        setProviderFailureCount(nextFailureCount, provider: provider, symbol: symbol)
+
+        logger.error("\(provider.displayName, privacy: .public) \(symbol, privacy: .public) failure #\(nextFailureCount) during \(context, privacy: .public): \(error.localizedDescription, privacy: .public)")
+
+        let threshold: Int
+        switch provider {
+        case .binance:
+            threshold = AppConfiguration.ProviderFallback.binanceFailureThreshold
+            guard activeProvider == .binance, nextFailureCount >= threshold else { return }
+            switchProvider(to: .okx, reason: "Binance \(symbol) failed \(nextFailureCount) times in a row")
+
+        case .okx:
+            threshold = AppConfiguration.ProviderFallback.okxFailureThreshold
+            guard activeProvider == .okx, nextFailureCount >= threshold else { return }
+
+            if selectedSymbols.allSatisfy({ providerFailureCount(provider: .okx, symbol: $0) >= threshold }) {
+                logger.notice("OKX fallback became unavailable after selected symbols exceeded the failure threshold")
+                setOKXUnavailable(true)
+            }
+        }
+    }
+
+    private func providerFailureCount(provider: MarketDataProvider, symbol: String) -> Int {
+        providerFailureCountsBySymbol[provider]?[symbol] ?? 0
+    }
+
+    private func setProviderFailureCount(_ count: Int, provider: MarketDataProvider, symbol: String) {
+        var providerFailures = providerFailureCountsBySymbol[provider] ?? [:]
+        if count == 0 {
+            providerFailures.removeValue(forKey: symbol)
+        } else {
+            providerFailures[symbol] = count
+        }
+        providerFailureCountsBySymbol[provider] = providerFailures
     }
 
     func startProviderRecoveryMonitor() {

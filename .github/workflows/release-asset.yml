@@ -81,10 +81,15 @@ jobs:
           echo "signing_enabled=$SIGNING_ENABLED" >> "$GITHUB_OUTPUT"
           echo "notarization_enabled=$NOTARIZATION_ENABLED" >> "$GITHUB_OUTPUT"
           echo "allow_unsigned=$ALLOW_UNSIGNED" >> "$GITHUB_OUTPUT"
+          if [ "$ALLOW_UNSIGNED" = "true" ]; then
+            echo "artifact_suffix=-unsigned" >> "$GITHUB_OUTPUT"
+          else
+            echo "artifact_suffix=" >> "$GITHUB_OUTPUT"
+          fi
 
           if [ "$SIGNING_ENABLED" = false ] || [ "$NOTARIZATION_ENABLED" = false ]; then
             if [ "$ALLOW_UNSIGNED" = "true" ]; then
-              echo "::warning::Publishing unsigned or non-notarized artifacts because allow_unsigned_release=true was set on a manual workflow dispatch."
+              echo "::warning::Publishing clearly labeled unsigned, non-notarized prerelease artifacts because allow_unsigned_release=true was set on a manual workflow dispatch."
             else
               echo "::error::Developer ID signing and notarization secrets must be configured before publishing release assets."
               exit 1
@@ -151,6 +156,7 @@ jobs:
         env:
           SIGNING_ENABLED: ${{ steps.signing.outputs.signing_enabled }}
           NOTARIZATION_ENABLED: ${{ steps.signing.outputs.notarization_enabled }}
+          ARTIFACT_SUFFIX: ${{ steps.signing.outputs.artifact_suffix }}
           APP_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -186,13 +192,14 @@ jobs:
             xcrun stapler staple "$APP_PATH"
           fi
 
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" CryptoTicker.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "CryptoTicker${ARTIFACT_SUFFIX}.zip"
 
       - name: Build installer package
         shell: bash
         env:
           SIGNING_ENABLED: ${{ steps.signing.outputs.signing_enabled }}
           NOTARIZATION_ENABLED: ${{ steps.signing.outputs.notarization_enabled }}
+          ARTIFACT_SUFFIX: ${{ steps.signing.outputs.artifact_suffix }}
           INSTALLER_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_INSTALLER_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -202,7 +209,7 @@ jobs:
           PKG_ROOT="$PWD/build/pkgroot"
           COMPONENT_PLIST="$PWD/build/components.plist"
           UNSIGNED_PKG_PATH="$PWD/build/CryptoTicker-unsigned.pkg"
-          PKG_PATH="CryptoTicker.pkg"
+          PKG_PATH="CryptoTicker${ARTIFACT_SUFFIX}.pkg"
           PACKAGE_VERSION="${{ steps.release.outputs.tag }}"
           PACKAGE_VERSION="${PACKAGE_VERSION#v}"
 
@@ -241,14 +248,39 @@ jobs:
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          ALLOW_UNSIGNED: ${{ steps.signing.outputs.allow_unsigned }}
+          ARTIFACT_SUFFIX: ${{ steps.signing.outputs.artifact_suffix }}
         run: |
-          gh release view "${{ steps.release.outputs.tag }}" \
-            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-          gh release create "${{ steps.release.outputs.tag }}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "${{ steps.release.outputs.tag }}" \
-            --notes ""
+          TAG="${{ steps.release.outputs.tag }}"
+          ZIP_PATH="CryptoTicker${ARTIFACT_SUFFIX}.zip"
+          PKG_PATH="CryptoTicker${ARTIFACT_SUFFIX}.pkg"
 
-          gh release upload "${{ steps.release.outputs.tag }}" CryptoTicker.zip CryptoTicker.pkg \
+          if [ "$ALLOW_UNSIGNED" = "true" ]; then
+            RELEASE_NOTES="Unsigned, non-notarized testing build. macOS Gatekeeper may reject this artifact unless the user explicitly allows it. Production releases require Developer ID signing and notarization secrets."
+          else
+            RELEASE_NOTES="Signed and notarized release build."
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$ALLOW_UNSIGNED" = "true" ]; then
+              gh release edit "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --prerelease \
+                --notes "$RELEASE_NOTES"
+            fi
+          else
+            CREATE_ARGS=(
+              gh release create "$TAG"
+              --repo "$GITHUB_REPOSITORY"
+              --title "$TAG"
+              --notes "$RELEASE_NOTES"
+            )
+            if [ "$ALLOW_UNSIGNED" = "true" ]; then
+              CREATE_ARGS+=(--prerelease)
+            fi
+            "${CREATE_ARGS[@]}"
+          fi
+
+          gh release upload "$TAG" "$ZIP_PATH" "$PKG_PATH" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
